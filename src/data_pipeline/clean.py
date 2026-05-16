@@ -143,20 +143,23 @@ def save_rejected(
     mask: pd.Series,
     rejected_path: Path,
     filename: str,
+    reason: str = "Unspecified",
 ) -> int:
     """Save rejected/bad rows to the rejected folder and return the count.
 
     Files are timestamped so successive pipeline runs never overwrite
-    previous audit records.
+    previous audit records. Includes a 'rejection_reason' column as per
+    competition requirements.
     """
     rejected_count = int(mask.sum())
     if rejected_count > 0:
         rejected_df = df[mask].copy()
+        rejected_df["rejection_reason"] = reason
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_file = rejected_path / f"{filename}_rejected_{ts}.csv"
         rejected_df.to_csv(out_file, index=False)
         logger.warning(
-            "Saved %d bad records to %s", rejected_count, out_file
+            "Saved %d bad records to %s (Reason: %s)", rejected_count, out_file, reason
         )
     return rejected_count
 
@@ -204,15 +207,16 @@ def clean_outlet_master(
 
     # Identify bad records (missing Outlet_Size)
     bad_mask = df[Columns.OUTLET_SIZE].isna()
-    rows_flagged = save_rejected(df, bad_mask, rejected_path, "outlet_master")
+    rows_flagged = save_rejected(
+        df, bad_mask, rejected_path, "outlet_master", reason="Missing Outlet_Size"
+    )
 
-    # Normalise existing data first, then fill gaps — ensures the sentinel
-    # value is always exactly "Unknown" regardless of normalize_column logic.
+    # Normalise existing data first, then fill gaps
     normalize_column(df, Columns.OUTLET_TYPE)
     normalize_column(df, Columns.OUTLET_SIZE)
     df[Columns.OUTLET_SIZE] = df[Columns.OUTLET_SIZE].fillna("Unknown")
 
-    # Fix known typos (values must be Title Case to match normalize_column output)
+    # Fix known typos
     if Columns.OUTLET_TYPE in df.columns:
         df[Columns.OUTLET_TYPE] = df[Columns.OUTLET_TYPE].replace(
             _OUTLET_TYPE_TYPOS
@@ -227,7 +231,7 @@ def clean_outlet_master(
         rows_in=rows_in,
         rows_out=len(df),
         rows_flagged=rows_flagged,
-        rows_dropped=0,  # Flagged rows are imputed, not removed
+        rows_dropped=0,
         output_path=output_file,
     )
 
@@ -399,31 +403,49 @@ def clean_transactions(
     rows_in = len(df)
     logger.info("Loaded %d rows from transactions file.", rows_in)
 
-    # Identify bad records: non-positive volume, negatives, bad dates, duplicates
-    bad_mask = pd.Series(False, index=df.index)
-    if Columns.VOLUME_LITERS in df.columns:
-        bad_mask = bad_mask | (df[Columns.VOLUME_LITERS] <= 0)
-    if Columns.TOTAL_BILL_VALUE in df.columns:
-        bad_mask = bad_mask | (df[Columns.TOTAL_BILL_VALUE] < 0)
-
-    # Validate Year/Month ranges
+    # Identify bad records
+    neg_vol = (df[Columns.VOLUME_LITERS] <= 0) if Columns.VOLUME_LITERS in df.columns else pd.Series(False, index=df.index)
+    neg_val = (df[Columns.TOTAL_BILL_VALUE] < 0) if Columns.TOTAL_BILL_VALUE in df.columns else pd.Series(False, index=df.index)
+    
+    invalid_period = pd.Series(False, index=df.index)
     if Columns.YEAR in df.columns and Columns.MONTH in df.columns:
         invalid_period = (
             (df[Columns.YEAR] < 2023) | (df[Columns.YEAR] > 2026)
             | (df[Columns.MONTH] < 1) | (df[Columns.MONTH] > 12)
         )
-        bad_mask = bad_mask | invalid_period
+
+    # Statistical Outlier Detection (IQR Method) to identify "System Artifacts"
+    outlier_mask = pd.Series(False, index=df.index)
+    if Columns.VOLUME_LITERS in df.columns:
+        Q1 = df[Columns.VOLUME_LITERS].quantile(0.25)
+        Q3 = df[Columns.VOLUME_LITERS].quantile(0.75)
+        IQR = Q3 - Q1
+        # Use a generous multiplier (10x) to only catch extreme artifacts, not high demand
+        outlier_mask = df[Columns.VOLUME_LITERS] > (Q3 + 10 * IQR)
 
     is_duplicate = df.duplicated(keep="first")
-    bad_mask = bad_mask | is_duplicate
 
-    rows_flagged = save_rejected(
-        df, bad_mask, rejected_path, "transactions_history"
-    )
+    # Sequential flagging to document specific reasons
+    rows_flagged = 0
+    rows_flagged += save_rejected(df, neg_vol, rejected_path, "transactions_history", "Non-positive Volume")
+    rows_flagged += save_rejected(df, neg_val, rejected_path, "transactions_history", "Negative Bill Value")
+    rows_flagged += save_rejected(df, invalid_period, rejected_path, "transactions_history", "Invalid Date Range")
+    rows_flagged += save_rejected(df, outlier_mask, rejected_path, "transactions_history", "Statistical Outlier (Artifact)")
+    rows_flagged += save_rejected(df, is_duplicate, rejected_path, "transactions_history", "Duplicate Record")
 
-    # Remove flagged rows (negatives + exact duplicates) from Silver.
-    # Negatives distort the latent demand ceiling; duplicates without
-    # a unique-ID column cannot be distinguished from true duplication.
+    # Final Silver mask: combine all rejections
+    bad_mask = neg_vol | neg_val | invalid_period | outlier_mask | is_duplicate
+
+    # Referential Integrity Check: Ensure Outlet_ID exists in Master
+    # This requires loading the already-saved silver master
+    master_path = silver_path / "outlet_master.parquet"
+    if master_path.exists():
+        master_ids = pd.read_parquet(master_path)["Outlet_ID"].unique()
+        orphan_mask = ~df["Outlet_ID"].isin(master_ids)
+        rows_flagged += save_rejected(df, orphan_mask, rejected_path, "transactions_history", "Referential Integrity Failure (Orphan)")
+        bad_mask = bad_mask | orphan_mask
+
+    # Remove flagged rows
     rows_dropped = int(bad_mask.sum())
     df = df[~bad_mask]
 
