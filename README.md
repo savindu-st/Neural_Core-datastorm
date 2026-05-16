@@ -12,12 +12,24 @@ Historical sales are treated as censored demand because observed sales may be li
 ```text
 QuadNova-datastorm/
 │
+├── config/              # Pipeline Configurations (YAML)
 ├── data/
-│   ├── bronze/     # Raw Ingestion (Untouched CSVs)
-│   ├── silver/     # Cleaned Data (Sanitized Parquet files)
-│   ├── gold/       # Enriched Data (Model-ready Features & POIs)
-│   ├── rejected/   # Quarantined Records (Data Forensics Store)
+│   ├── bronze/          # Raw Ingestion (Untouched CSVs)
+│   ├── silver/          # Cleaned Data (Sanitized Parquet files)
+│   ├── gold/            # Enriched Data (Model-ready Features & POIs)
+│   ├── external/        # External Data (Scraped POIs)
+│   ├── quarantine/      # Suspicious records flagged for review
+│   ├── rejected/        # Quarantined Records (Data Forensics Store)
 │
+├── models/              # Serialized Model Artifacts
+├── notebooks/           # Jupyter Notebooks for EDA
+├── outputs/
+│   ├── charts/          # Generated Visualizations
+│   ├── evidence/        # Explainability evidence
+│   ├── predictions/     # quadnova_predictions.csv
+│   └── submission/      # Final packages
+│
+├── reports/             # Forensics, Data Eng Docs & GenAI Transparency Log
 ├── src/
 │   ├── data_pipeline/   # Ingestion, Cleaning (DQ Engine), Transformation
 │   ├── features/        # Advanced Feature Engineering (Saturation, Stability)
@@ -25,11 +37,7 @@ QuadNova-datastorm/
 │   ├── scraper/         # High-performance BBox POI Scraper
 │   └── utils/           # Shared DQ Library & Config handlers
 │
-├── reports/             # Forensics Summary & GenAI Transparency Log
-├── outputs/
-│   ├── predictions/     # quadnova_predictions.csv
-│
-├── models/              # Serialized Model Artifacts
+├── tests/               # Automated Unit & Integration Tests
 └── README.md
 ```
 
@@ -76,6 +84,7 @@ python -m src.data_pipeline.generate_forensics_report
 # Final Deliverables
 *   **Predictions**: `outputs/predictions/quadnova_predictions.csv`
 *   **BI Report**: `outputs/predictions/business_intelligence_report.csv`
+*   **Data Engineering & Forensics Report**: `reports/data_engineering_and_forensics.md`
 *   **Forensics Audit**: `reports/forensics_summary.md`
 *   **GenAI Log**: `reports/genai_log.md`
 
@@ -130,7 +139,7 @@ data/bronze/
 
 ### Member 3 Starts
 
-* `src/scraper/poi_scraper.py` setup.
+* `src/scraper/poi_fast_scraper.py` setup.
 * Report template.
 
 ---
