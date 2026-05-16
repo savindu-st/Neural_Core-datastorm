@@ -31,19 +31,26 @@ def generate_charts():
         plt.savefig(chart_path / "feature_importance.png")
         print("SAVED: feature_importance.png")
 
-    # 2. Rejection Reason Chart
+    # 2. Rejection Reason Chart (Bar Chart is better for imbalanced data)
     rej_path = Path("outputs/evidence/rejected_reason_counts.csv")
     if rej_path.exists():
         df_rej = pd.read_csv(rej_path)
         # Aggregate by reason
-        reason_sums = df_rej.groupby('rejection_reason')['count'].sum().sort_values(ascending=False)
+        reason_sums = df_rej.groupby('rejection_reason')['count'].sum().sort_values(ascending=True)
         plt.figure()
-        reason_sums.plot(kind='pie', autopct='%1.1f%%', colors=sns.color_palette('pastel'))
-        plt.title("Data Forensics: Rejection Reasons", fontsize=15)
+        # Use log scale if the difference is massive (98% vs 1%)
+        ax = reason_sums.plot(kind='barh', color=sns.color_palette('viridis', len(reason_sums)))
+        plt.title("Data Forensics: Rejection Reasons (Trapped Anomalies)", fontsize=15)
+        plt.xlabel("Number of Records")
         plt.ylabel("")
+        
+        # Add labels to the end of bars
+        for i, v in enumerate(reason_sums):
+            ax.text(v + 100, i, str(v), color='black', va='center', fontweight='bold')
+            
         plt.tight_layout()
         plt.savefig(chart_path / "rejection_summary.png")
-        print("SAVED: rejection_summary.png")
+        print("SAVED: rejection_summary.png (Upgraded to Bar Chart)")
 
     # 3. Prediction Distribution
     pred_path = Path("outputs/predictions/quadnova_predictions.csv")
