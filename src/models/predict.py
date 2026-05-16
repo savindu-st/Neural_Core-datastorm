@@ -114,7 +114,9 @@ def generate_predictions():
     # 5. Save Final CSVs
     # A. Official Submission Format (Only required columns)
     submission = df[['Outlet_ID', 'Maximum_Monthly_Liters']].copy()
-    sub_file = output_path / "neural_core_predictions.csv"
+    
+    # Competition requirement: teamname_predictions.csv
+    sub_file = output_path / "quadnova_predictions.csv"
     submission.to_csv(sub_file, index=False)
     
     # B. Business BI Report (Enhanced version for the report PDF)

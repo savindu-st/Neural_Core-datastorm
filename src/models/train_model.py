@@ -76,10 +76,11 @@ def train_potential_model():
     joblib.dump(feature_cols, model_path / "feature_columns.pkl")
     
     # Generate Feature Importance for the Report (Explainability Layer)
-    if hasattr(model, 'coef_'):
+    if hasattr(model, 'beta') and model.beta is not None:
+        # Exclude intercept (beta[0])
         importance = pd.DataFrame({
             'Feature': feature_cols,
-            'Coefficient': model.coef_
+            'Coefficient': model.beta[1:]
         })
         importance['Importance_Abs'] = importance['Coefficient'].abs()
         importance = importance.sort_values('Importance_Abs', ascending=False)

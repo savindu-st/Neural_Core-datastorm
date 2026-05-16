@@ -1,0 +1,4 @@
+dataset,rejection_reason,count
+unknown,Geospatial Out-of-Bounds/Format,240
+unknown,Mandatory Field Null (Outlet_Size),196
+unknown,System Artifact (Statistical Outlier),28764

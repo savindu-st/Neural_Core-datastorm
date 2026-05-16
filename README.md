@@ -1,154 +1,102 @@
 # Data Storm 7.0 — Potential-Based Allocation Model
+## Team: QuadNova
 
-## Problem Statement
+### Problem Statement
+The objective of this challenge is to estimate the latent maximum monthly beverage purchase potential for traditional retail outlets across Sri Lanka for January 2026. 
 
-The objective of this challenge is to estimate the latent maximum monthly beverage purchase potential for traditional retail outlets across Sri Lanka for January 2026.
-
-Historical sales are treated as censored demand because observed sales may be limited by operational constraints such as stockouts, delivery caps, or credit limitations.
+Historical sales are treated as censored demand because observed sales may be limited by operational constraints such as stockouts, delivery caps, or credit limitations. Our approach utilizes **Tobit (Censored) Regression** and advanced **Spatial Analytics** to uncap this potential.
 
 ---
 
-# Project Structure
-
+# Project Structure (Lakehouse Architecture)
 ```text
-project/
+QuadNova-datastorm/
 │
 ├── data/
-│   ├── bronze/
-│   ├── silver/
-│   ├── gold/
-│   ├── rejected/
-│   └── external/
-│
-├── outputs/
-│   ├── charts/
-│   ├── predictions/
-│   └── submission/
+│   ├── bronze/     # Raw Ingestion (Untouched CSVs)
+│   ├── silver/     # Cleaned Data (Sanitized Parquet files)
+│   ├── gold/       # Enriched Data (Model-ready Features & POIs)
+│   ├── rejected/   # Quarantined Records (Data Forensics Store)
 │
 ├── src/
-│   ├── data_pipeline/
-│   ├── features/
-│   ├── models/
-│   ├── scraper/
-│   └── utils/
+│   ├── data_pipeline/   # Ingestion, Cleaning (DQ Engine), Transformation
+│   ├── features/        # Advanced Feature Engineering (Saturation, Stability)
+│   ├── models/          # Tobit Regression, Training, Prediction
+│   ├── scraper/         # High-performance BBox POI Scraper
+│   └── utils/           # Shared DQ Library & Config handlers
 │
-├── report/
-├── presentation/
-├── tests/
-├── config/
+├── reports/             # Forensics Summary & GenAI Transparency Log
+├── outputs/
+│   ├── predictions/     # quadnova_predictions.csv
 │
-├── README.md
-├── gemini.md
-└── requirements.txt
+├── models/              # Serialized Model Artifacts
+└── README.md
 ```
 
 ---
 
-# Setup
+# Running the Pipeline End-to-End
 
-## 1. Create Virtual Environment
-
+### 1. Setup Environment
 ```bash
 python -m venv venv
-```
-
-### Windows
-
-```bash
-venv\Scripts\activate
-```
-
-### Linux / Mac
-
-```bash
-source venv/bin/activate
-```
-
----
-
-## 2. Install Dependencies
-
-```bash
+source venv/bin/activate  # or venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
----
+### 2. Add Raw Data
+Place all provided CSV files in `data/bronze/`.
 
-# Running the Pipeline
-
-## Step 1 — Add Raw Data
-
-Copy all provided CSV files into:
-
-```text
-data/bronze/
-```
-
----
-
-## Step 2 — Run Data Pipeline
-
+### 3. Execute Pipeline
 ```bash
-python src/data_pipeline/ingest.py
-python src/data_pipeline/clean.py
-python src/data_pipeline/transform.py
+# Data Forensics & Cleaning
+python -m src.data_pipeline.clean
+
+# External POI Acquisition (BBox + KD-Tree)
+python -m src.scraper.poi_fast_scraper
+
+# Gold Layer Transformation
+python -m src.data_pipeline.transform
+
+# Advanced Feature Engineering
+python -m src.features.build_features
+
+# Model Training & Explainability
+python -m src.models.train_model
+
+# Generate Final Submission & BI Report
+python -m src.models.predict
+
+# Generate Technical Audit Report
+python -m src.data_pipeline.generate_forensics_report
 ```
 
 ---
 
-## Step 3 — Run POI Scraper
-
-```bash
-python src/scraper/poi_scraper.py
-```
-
----
-
-## Step 4 — Build Features
-
-```bash
-python src/features/build_features.py
-```
+# Final Deliverables
+*   **Predictions**: `outputs/predictions/quadnova_predictions.csv`
+*   **BI Report**: `outputs/predictions/business_intelligence_report.csv`
+*   **Forensics Audit**: `reports/forensics_summary.md`
+*   **GenAI Log**: `reports/genai_log.md`
 
 ---
 
-## Step 5 — Train Model & Generate Predictions
+# Team Workflow Sequence
 
-```bash
-python src/models/train_model.py
-python src/models/predict.py
-```
+### Member 1: Data Engineering & Forensics
+*   Developed the **Bronze → Silver → Gold** Lakehouse pipeline.
+*   Built the **Reusable DQ Engine** and the automated **Forensics Audit** system.
+*   Managed referential integrity and statistical outlier detection.
 
----
+### Member 2: Modeling & Features
+*   Implemented the **Tobit Regression (Censored)** model logic.
+*   Engineered advanced features: **Market Saturation Index**, **Temporal Stability**, and **Outlet Density**.
+*   Developed the **Business Intelligence Layer** (Confidence Scoring, Segmentation).
 
-# Final Outputs
-
-## Predictions
-
-```text
-outputs/predictions/teamname_predictions.csv
-```
-
-Required columns:
-
-* Outlet_ID
-* Maximum_Monthly_Liters
-
----
-
-## Report
-
-```text
-report/final_report.pdf
-```
-
----
-
-# GenAI Transparency Log
-
-```text
-gemini.md
-```
+### Member 3: Scraper & Documentation
+*   Developed the **High-Performance Bounding Box Scraper** (Scipy KD-Tree).
+*   Managed the **GenAI Transparency Log** and technical documentation.
+*   Designed the **Business Recommendation** engine for final reporting.
 
 ---
 
