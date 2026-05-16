@@ -162,14 +162,18 @@ cython_debug/
 # Data folders
 data/bronze/*
 !data/bronze/.gitkeep
+!data/bronze/README.md
 data/silver/*
 !data/silver/.gitkeep
+!data/silver/README.md
 data/gold/*
 !data/gold/.gitkeep
+!data/gold/README.md
 data/external/*
 !data/external/.gitkeep
 data/rejected/*
 !data/rejected/.gitkeep
+!data/rejected/README.md
 
 # Models
 models/*
