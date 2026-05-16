@@ -11,6 +11,7 @@ xgboost
 lightgbm
 statsmodels
 scipy
+joblib
 lifelines # Useful for censored regression
 
 # Web Scraping & APIs

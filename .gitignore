@@ -179,12 +179,12 @@ data/rejected/*
 models/*
 !models/.gitkeep
 
-# Competition Deliverables (Explicitly allowed for submission)
 # ---------------------------------------------------------------------------
 !models/*.pkl
 !models/*.csv
 !outputs/predictions/*.csv
 !outputs/evidence/*.csv
+!outputs/charts/*.png
 !reports/*.md
 
 # Ignore temporary local logs
