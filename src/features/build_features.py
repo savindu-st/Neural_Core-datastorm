@@ -20,26 +20,15 @@ from src.utils.config import load_config
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def load_silver_data(silver_path: Path) -> dict[str, pd.DataFrame]:
-    """Loads all cleaned parquet files from the Silver layer."""
-    data = {}
-    files = {
-        "transactions": "transactions_history.parquet",
-        "outlets": "outlet_master.parquet",
-        "coordinates": "outlet_coordinates.parquet",
-        "seasonality": "distributor_seasonality_details.parquet",
-        "holidays": "holiday_list.parquet"
-    }
+def load_master_gold_data(gold_path: Path) -> pd.DataFrame:
+    """Loads the merged master dataset from the Gold layer."""
+    path = gold_path / "final_dataset.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"Gold master dataset not found at {path}. Run transform.py first.")
     
-    for key, filename in files.items():
-        path = silver_path / filename
-        if path.exists():
-            data[key] = pd.read_parquet(path)
-            logger.info(f"Loaded {filename} ({len(data[key])} rows)")
-        else:
-            logger.warning(f"Silver file {filename} not found at {path}")
-    
-    return data
+    df = pd.read_csv(path)
+    logger.info(f"Loaded Gold master dataset ({len(df)} rows)")
+    return df
 
 def build_features():
     """Main feature engineering pipeline."""
@@ -50,14 +39,14 @@ def build_features():
     
     gold_path.mkdir(parents=True, exist_ok=True)
     
-    # 1. Load Data
-    data = load_silver_data(silver_path)
-    if "transactions" not in data:
-        logger.error("Transactions data missing. Cannot build features.")
+    # 1. Load Data from Gold
+    try:
+        df = load_master_gold_data(gold_path)
+    except FileNotFoundError as e:
+        logger.error(e)
         return
 
-    tx = data["transactions"]
-    outlets = data.get("outlets")
+    tx = df.copy()
     
     # 2. Aggregated Behavioral Features (Outlet Level)
     logger.info("Calculating behavioral features...")
@@ -89,7 +78,8 @@ def build_features():
         'historical_max_sales', 
         'sales_std', 
         'last_month_sales',
-        'avg_order_frequency'
+        'avg_order_frequency',
+        'Distributor_ID'
     ]
     outlet_features = outlet_features.reset_index()
     
@@ -104,28 +94,13 @@ def build_features():
     
     outlet_features = outlet_features.merge(recency[['Outlet_ID', 'inactive_days']], on='Outlet_ID', how='left')
 
-    # 3. Merge Metadata (Outlet Type, Size, Province, Coordinates)
-    if outlets is not None:
-        logger.info("Merging outlet metadata...")
-        outlet_features = outlet_features.merge(outlets, on='Outlet_ID', how='left')
+    # 3. Metadata (Already present in merged Gold dataset)
+    # No extra merge needed
 
-    if "coordinates" in data:
-        logger.info("Merging coordinates...")
-        outlet_features = outlet_features.merge(data["coordinates"], on='Outlet_ID', how='left')
-
-    # 4. Seasonality Score
-    if "seasonality" in data:
-        logger.info("Merging seasonality scores...")
-        # Seasonality is usually by Distributor or Province and Month
-        # Assuming we need Jan 2026 seasonality (Month 1)
-        jan_seasonality = data["seasonality"][data["seasonality"]["Month"] == 1].copy()
-        # Merge by Distributor_ID if available in outlets
-        if 'Distributor_ID' in outlet_features.columns and 'Distributor_ID' in jan_seasonality.columns:
-            outlet_features = outlet_features.merge(
-                jan_seasonality[['Distributor_ID', 'Seasonality_Index']], 
-                on='Distributor_ID', 
-                how='left'
-            )
+    # 4. Seasonality Score (Already merged in Gold, but ensuring Month 1)
+    if 'Seasonality_Index' not in outlet_features.columns:
+        logger.warning("Seasonality_Index missing from gold dataset.")
+        outlet_features['Seasonality_Index'] = 1.0
 
     # 5. POI Score (External Data from Ryan's scraper)
     poi_path = gold_path / "poi_data.csv"
