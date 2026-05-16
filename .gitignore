@@ -174,3 +174,13 @@ data/rejected/*
 # Models
 models/*
 !models/.gitkeep
+
+# ---------------------------------------------------------------------------
+# Competition Deliverables (Explicitly allowed for submission)
+# ---------------------------------------------------------------------------
+!models/*.pkl
+!outputs/predictions/*.csv
+
+# Ignore temporary local logs
+*.log
+.gemini/
