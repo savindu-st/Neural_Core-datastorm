@@ -52,9 +52,15 @@ def train_potential_model():
         'Seasonality_Index'
     ]
     
-    # Add POI if available
+    # Add POI and Causal features if available
     if 'poi_score' in df.columns:
         feature_cols.append('poi_score')
+    if 'outlet_density' in df.columns:
+        feature_cols.append('outlet_density')
+    if 'market_saturation_index' in df.columns:
+        feature_cols.append('market_saturation_index')
+    if 'temporal_stability_score' in df.columns:
+        feature_cols.append('temporal_stability_score')
         
     X = df[feature_cols].values
     
@@ -65,9 +71,22 @@ def train_potential_model():
     
     logger.info(f"Model fitted. Estimated Sigma: {model.sigma:.4f}")
     
-    # 4. Save Model
+    # 4. Save Model and Explainability Data
     joblib.dump(model, model_path / "potential_model.pkl")
     joblib.dump(feature_cols, model_path / "feature_columns.pkl")
+    
+    # Generate Feature Importance for the Report (Explainability Layer)
+    if hasattr(model, 'coef_'):
+        importance = pd.DataFrame({
+            'Feature': feature_cols,
+            'Coefficient': model.coef_
+        })
+        importance['Importance_Abs'] = importance['Coefficient'].abs()
+        importance = importance.sort_values('Importance_Abs', ascending=False)
+        importance_file = model_path / "feature_importance.csv"
+        importance.to_csv(importance_file, index=False)
+        logger.info(f"Feature importance saved for explainability: {importance_file}")
+    
     logger.info(f"Model and feature list saved to {model_path}")
 
 if __name__ == "__main__":

@@ -11,13 +11,13 @@ Usage::
 """
 
 import pandas as pd
-
+import logging
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
-import logging
 
+import src.utils.dq_engine as dq
 from src.utils.config import load_config
 
 logger = logging.getLogger(__name__)
@@ -205,10 +205,10 @@ def clean_outlet_master(
     _require_columns(df, [Columns.OUTLET_SIZE], "outlet_master")
     rows_in = len(df)
 
-    # Identify bad records (missing Outlet_Size)
-    bad_mask = df[Columns.OUTLET_SIZE].isna()
+    # Use reusable DQ Engine for Null checks
+    bad_mask = dq.validate_nulls(df, [Columns.OUTLET_SIZE])
     rows_flagged = save_rejected(
-        df, bad_mask, rejected_path, "outlet_master", reason="Missing Outlet_Size"
+        df, bad_mask, rejected_path, "outlet_master", reason="Mandatory Field Null (Outlet_Size)"
     )
 
     # Normalise existing data first, then fill gaps
@@ -251,23 +251,20 @@ def clean_outlet_coordinates(
     _require_columns(df, [Columns.LATITUDE, Columns.LONGITUDE], "outlet_coordinates")
     rows_in = len(df)
 
-    # Convert to numeric to find unparseable values
-    lat_num = pd.to_numeric(df[Columns.LATITUDE], errors="coerce")
-    lon_num = pd.to_numeric(df[Columns.LONGITUDE], errors="coerce")
-
-    unparseable = lat_num.isna() | lon_num.isna()
+    # Use reusable DQ Engine for Range and Type checks
+    unparseable = dq.validate_types(df, Columns.LATITUDE, "numeric") | dq.validate_types(df, Columns.LONGITUDE, "numeric")
+    
     out_of_bounds = (
-        (lat_num < GeoBounds.SRI_LANKA_LAT_MIN)
-        | (lat_num > GeoBounds.SRI_LANKA_LAT_MAX)
-        | (lon_num < GeoBounds.SRI_LANKA_LON_MIN)
-        | (lon_num > GeoBounds.SRI_LANKA_LON_MAX)
+        dq.validate_range(df, Columns.LATITUDE, GeoBounds.SRI_LANKA_LAT_MIN, GeoBounds.SRI_LANKA_LAT_MAX)
+        | dq.validate_range(df, Columns.LONGITUDE, GeoBounds.SRI_LANKA_LON_MIN, GeoBounds.SRI_LANKA_LON_MAX)
     )
+    
     bad_mask = unparseable | out_of_bounds
-    rows_flagged = save_rejected(df, bad_mask, rejected_path, "outlet_coordinates")
+    rows_flagged = save_rejected(df, bad_mask, rejected_path, "outlet_coordinates", reason="Geospatial Out-of-Bounds/Format")
 
     # Null out bad values so Silver is genuinely clean
-    df[Columns.LATITUDE] = lat_num.where(~bad_mask)
-    df[Columns.LONGITUDE] = lon_num.where(~bad_mask)
+    df[Columns.LATITUDE] = pd.to_numeric(df[Columns.LATITUDE], errors="coerce").where(~bad_mask)
+    df[Columns.LONGITUDE] = pd.to_numeric(df[Columns.LONGITUDE], errors="coerce").where(~bad_mask)
 
     output_file = silver_path / "outlet_coordinates.parquet"
     _atomic_parquet_write(df, output_file)
@@ -403,46 +400,38 @@ def clean_transactions(
     rows_in = len(df)
     logger.info("Loaded %d rows from transactions file.", rows_in)
 
-    # Identify bad records
-    neg_vol = (df[Columns.VOLUME_LITERS] <= 0) if Columns.VOLUME_LITERS in df.columns else pd.Series(False, index=df.index)
-    neg_val = (df[Columns.TOTAL_BILL_VALUE] < 0) if Columns.TOTAL_BILL_VALUE in df.columns else pd.Series(False, index=df.index)
+    # 1. Use reusable DQ Engine for range and duplicate checks
+    neg_vol = dq.validate_range(df, Columns.VOLUME_LITERS, 0.0001, 1000000) # Non-positive
+    neg_val = dq.validate_range(df, Columns.TOTAL_BILL_VALUE, 0.0, 10000000)
     
-    invalid_period = pd.Series(False, index=df.index)
-    if Columns.YEAR in df.columns and Columns.MONTH in df.columns:
-        invalid_period = (
-            (df[Columns.YEAR] < 2023) | (df[Columns.YEAR] > 2026)
-            | (df[Columns.MONTH] < 1) | (df[Columns.MONTH] > 12)
-        )
+    invalid_period = dq.validate_range(df, Columns.YEAR, 2023, 2026) | dq.validate_range(df, Columns.MONTH, 1, 12)
 
-    # Statistical Outlier Detection (IQR Method) to identify "System Artifacts"
+    # 2. Statistical Outlier Detection (Causal Signal Separation)
     outlier_mask = pd.Series(False, index=df.index)
     if Columns.VOLUME_LITERS in df.columns:
-        Q1 = df[Columns.VOLUME_LITERS].quantile(0.25)
         Q3 = df[Columns.VOLUME_LITERS].quantile(0.75)
-        IQR = Q3 - Q1
-        # Use a generous multiplier (10x) to only catch extreme artifacts, not high demand
+        IQR = Q3 - df[Columns.VOLUME_LITERS].quantile(0.25)
         outlier_mask = df[Columns.VOLUME_LITERS] > (Q3 + 10 * IQR)
 
-    is_duplicate = df.duplicated(keep="first")
+    is_duplicate = dq.validate_duplicates(df, subset=list(df.columns))
 
     # Sequential flagging to document specific reasons
     rows_flagged = 0
-    rows_flagged += save_rejected(df, neg_vol, rejected_path, "transactions_history", "Non-positive Volume")
-    rows_flagged += save_rejected(df, neg_val, rejected_path, "transactions_history", "Negative Bill Value")
-    rows_flagged += save_rejected(df, invalid_period, rejected_path, "transactions_history", "Invalid Date Range")
-    rows_flagged += save_rejected(df, outlier_mask, rejected_path, "transactions_history", "Statistical Outlier (Artifact)")
+    rows_flagged += save_rejected(df, neg_vol, rejected_path, "transactions_history", "Value Range Failure (Volume)")
+    rows_flagged += save_rejected(df, neg_val, rejected_path, "transactions_history", "Value Range Failure (Bill)")
+    rows_flagged += save_rejected(df, invalid_period, rejected_path, "transactions_history", "Invalid Date range")
+    rows_flagged += save_rejected(df, outlier_mask, rejected_path, "transactions_history", "System Artifact (Statistical Outlier)")
     rows_flagged += save_rejected(df, is_duplicate, rejected_path, "transactions_history", "Duplicate Record")
 
-    # Final Silver mask: combine all rejections
+    # Final Silver mask
     bad_mask = neg_vol | neg_val | invalid_period | outlier_mask | is_duplicate
 
-    # Referential Integrity Check: Ensure Outlet_ID exists in Master
-    # This requires loading the already-saved silver master
+    # 3. Referential Integrity Check (Required by Section 4.2)
     master_path = silver_path / "outlet_master.parquet"
     if master_path.exists():
-        master_ids = pd.read_parquet(master_path)["Outlet_ID"].unique()
-        orphan_mask = ~df["Outlet_ID"].isin(master_ids)
-        rows_flagged += save_rejected(df, orphan_mask, rejected_path, "transactions_history", "Referential Integrity Failure (Orphan)")
+        master_df = pd.read_parquet(master_path)
+        orphan_mask = dq.validate_referential_integrity(df, master_df, "Outlet_ID")
+        rows_flagged += save_rejected(df, orphan_mask, rejected_path, "transactions_history", "Referential Integrity Failure")
         bad_mask = bad_mask | orphan_mask
 
     # Remove flagged rows

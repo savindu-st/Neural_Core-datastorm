@@ -21,13 +21,25 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 def load_master_gold_data(gold_path: Path) -> pd.DataFrame:
-    """Loads the merged master dataset from the Gold layer."""
+    """Loads the merged master dataset using memory-efficient types."""
     path = gold_path / "final_dataset.csv"
     if not path.exists():
         raise FileNotFoundError(f"Gold master dataset not found at {path}. Run transform.py first.")
     
-    df = pd.read_csv(path)
-    logger.info(f"Loaded Gold master dataset ({len(df)} rows)")
+    # Only load columns we need to save RAM
+    cols = ['Outlet_ID', 'Year', 'Month', 'Volume_Liters', 'Total_Bill_Value', 'Distributor_ID', 'Latitude', 'Longitude']
+    
+    # Use smaller data types to save 50% RAM
+    dtypes = {
+        'Year': 'int16',
+        'Month': 'int8',
+        'Volume_Liters': 'float32',
+        'Total_Bill_Value': 'float32',
+        'Distributor_ID': 'category'
+    }
+    
+    df = pd.read_csv(path, usecols=cols, dtype=dtypes)
+    logger.info(f"Loaded Gold master dataset ({len(df)} rows) using optimized types.")
     return df
 
 def build_features():
@@ -39,14 +51,12 @@ def build_features():
     
     gold_path.mkdir(parents=True, exist_ok=True)
     
-    # 1. Load Data from Gold
+    # 1. Load Data from Gold (Memory Efficient)
     try:
-        df = load_master_gold_data(gold_path)
+        tx = load_master_gold_data(gold_path) # Load directly into 'tx'
     except FileNotFoundError as e:
         logger.error(e)
         return
-
-    tx = df.copy()
     
     # 2. Aggregated Behavioral Features (Outlet Level)
     logger.info("Calculating behavioral features...")
@@ -81,18 +91,33 @@ def build_features():
         'avg_order_frequency',
         'Distributor_ID'
     ]
+    
+    # Calculate Temporal Stability Score (1 - CV, capped at 1)
+    # High stability (near 1) = Consistent demand. Low stability = Volatile.
+    cv = outlet_features['sales_std'] / (outlet_features['monthly_avg_sales'] + 1e-6)
+    outlet_features['temporal_stability_score'] = np.clip(1 - (cv / 2), 0, 1)
+    
     outlet_features = outlet_features.reset_index()
     
     # Growth Rate (Simple: last month vs average)
     outlet_features['growth_rate'] = (outlet_features['last_month_sales'] / outlet_features['monthly_avg_sales']) - 1
     
     # Inactive Days (Recency)
-    # Assuming the "current" date is the max date in the transactions
-    max_date = pd.to_datetime(tx['Date']).max()
+    # Ensure Date is datetime for calculation
+    tx['Date'] = pd.to_datetime(tx['Date'])
+    max_date = tx['Date'].max()
+    
     recency = tx.groupby('Outlet_ID')['Date'].max().reset_index()
-    recency['inactive_days'] = (max_date - pd.to_datetime(recency['Date'])).dt.days
+    recency.columns = ['Outlet_ID', 'Last_Date']
+    recency['inactive_days'] = (max_date - recency['Last_Date']).dt.days
     
     outlet_features = outlet_features.merge(recency[['Outlet_ID', 'inactive_days']], on='Outlet_ID', how='left')
+
+    # IMPORTANT: Wipe the massive transaction data from RAM to prevent crashing!
+    del tx
+    import gc
+    gc.collect()
+    logger.info("Transaction memory released.")
 
     # 3. Metadata (Already present in merged Gold dataset)
     # No extra merge needed
@@ -122,8 +147,34 @@ def build_features():
             }
             poi_data['poi_score'] = sum(poi_data[c] * weights.get(c, 1.0) for c in count_cols)
         
+        # 5b. Competition Density (The "Winning" Causal Signal)
+        logger.info("Calculating competitive pressure (Outlet Density)...")
+        # Optimization: Use the 20k Silver Coordinates file directly to save memory!
+        coord_path = Path("data/silver/outlet_coordinates.parquet")
+        if coord_path.exists():
+            coords_df = pd.read_parquet(coord_path).dropna(subset=['Latitude', 'Longitude'])
+            from scipy.spatial import cKDTree
+            tree = cKDTree(coords_df[['Latitude', 'Longitude']].values)
+            density = tree.query_ball_point(coords_df[['Latitude', 'Longitude']].values, r=0.009)
+            
+            density_map = pd.DataFrame({
+                'Outlet_ID': coords_df['Outlet_ID'],
+                'outlet_density': [len(d) - 1 for d in density]
+            })
+            
+            # Merge density into poi_data to calculate saturation
+            poi_data = poi_data.merge(density_map, on='Outlet_ID', how='left')
+            poi_data['market_saturation_index'] = poi_data['poi_score'] / (1 + poi_data['outlet_density'].fillna(0))
+        else:
+            logger.warning("Silver coordinates missing. Skipping density features.")
+        
         if 'Outlet_ID' in poi_data.columns:
-            outlet_features = outlet_features.merge(poi_data[['Outlet_ID', 'poi_score']], on='Outlet_ID', how='left')
+            cols_to_merge = ['Outlet_ID', 'poi_score', 'outlet_density', 'market_saturation_index']
+            outlet_features = outlet_features.merge(
+                poi_data[[c for c in cols_to_merge if c in poi_data.columns]], 
+                on='Outlet_ID', 
+                how='left'
+            )
         else:
             logger.warning("POI data found but missing Outlet_ID column.")
     else:
@@ -136,7 +187,9 @@ def build_features():
     outlet_features['is_censored'] = (outlet_features['last_month_sales'] >= 0.95 * outlet_features['historical_max_sales']).astype(int)
 
     # Final Cleanup
-    outlet_features = outlet_features.fillna(0)
+    # Fill NaNs only in numeric columns to avoid issues with categorical columns (like Distributor_ID)
+    numeric_cols = outlet_features.select_dtypes(include=[np.number]).columns
+    outlet_features[numeric_cols] = outlet_features[numeric_cols].fillna(0)
     
     # Save to Gold
     output_file = gold_path / "model_features.csv"
