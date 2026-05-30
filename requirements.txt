@@ -19,10 +19,17 @@ requests
 beautifulsoup4
 scrapy
 
+# Generative AI - Gemini
+google-generativeai
+
 # Visualization
 matplotlib
 seaborn
 plotly
+
+# Web App & UI
+streamlit
+streamlit-option-menu
 
 # Utilities
 pyyaml
