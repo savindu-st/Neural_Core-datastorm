@@ -190,3 +190,6 @@ models/*
 # Ignore temporary local logs
 *.log
 .gemini/
+
+
+src/scraper/poi_scraper.py
