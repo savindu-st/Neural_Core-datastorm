@@ -1,20 +1,20 @@
 """
-Enriches Silver-layer data with feature engineering for latent demand modeling.
+Final feature dataset assembler.
 
-This script merges cleaned datasets from the Silver layer, calculates outlet-level
-behavioral features, joins external POI signals, and produces a Gold-layer 
-model-ready dataset.
-
-Usage::
-
-    python -m src.features.build_features
+Orchestrates all modular feature engineering stages (sales, seasonality, 
+and spatial features), merges them, computes compatibility metrics, 
+and generates gold model_features.csv.
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
+import gc
 from src.utils.config import load_config
+from src.features.sales_features import calculate_sales_features
+from src.features.seasonality_features import calculate_seasonality_features
+from src.features.spatial_features import calculate_spatial_features
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -29,7 +29,6 @@ def load_master_gold_data(gold_path: Path) -> pd.DataFrame:
     # Only load columns we need to save RAM
     cols = ['Outlet_ID', 'Year', 'Month', 'Volume_Liters', 'Total_Bill_Value', 'Distributor_ID', 'Latitude', 'Longitude']
     
-    # Use smaller data types to save 50% RAM
     dtypes = {
         'Year': 'int16',
         'Month': 'int8',
@@ -43,146 +42,177 @@ def load_master_gold_data(gold_path: Path) -> pd.DataFrame:
     return df
 
 def build_features():
-    """Main feature engineering pipeline."""
+    logger.info("=== Starting Master Feature Engineering Pipeline ===")
     config = load_config()
     silver_path = Path(config["data"]["silver_path"])
     gold_path = Path(config["data"]["gold_path"])
-    external_path = Path(config["data"].get("external_path", "data/external"))
-    
     gold_path.mkdir(parents=True, exist_ok=True)
     
-    # 1. Load Data from Gold (Memory Efficient)
+    # --- Step 1: Execute Modular Feature Creators ---
+    logger.info("Running modular feature script: sales_features...")
+    calculate_sales_features()
+    
+    logger.info("Running modular feature script: seasonality_features...")
+    calculate_seasonality_features()
+    
+    logger.info("Running modular feature script: spatial_features...")
     try:
-        tx = load_master_gold_data(gold_path) # Load directly into 'tx'
-    except FileNotFoundError as e:
-        logger.error(e)
-        return
-    
-    # 2. Aggregated Behavioral Features (Outlet Level)
-    logger.info("Calculating behavioral features...")
-    
-    # Synthesize Date if missing (using Year and Month)
+        calculate_spatial_features()
+        spatial_success = True
+    except Exception as e:
+        logger.warning(f"Spatial features calculation skipped or failed: {e}")
+        spatial_success = False
+
+    # --- Step 2: Extract Recency & Compatibility Indicators from Transactions ---
+    logger.info("Processing transaction history for recency, stability, and growth indicators...")
+    try:
+        tx = load_master_gold_data(gold_path)
+    except FileNotFoundError:
+        # Fallback to silver Parquet if final_dataset not yet built
+        tx_parquet = silver_path / "transactions_history.parquet"
+        if tx_parquet.exists():
+            tx = pd.read_parquet(tx_parquet)
+        else:
+            raise FileNotFoundError("No transaction source dataset found to aggregate!")
+            
     if 'Date' not in tx.columns and 'Year' in tx.columns and 'Month' in tx.columns:
-        logger.info("Synthesizing Date from Year and Month...")
         tx['Date'] = pd.to_datetime(tx[['Year', 'Month']].assign(Day=1))
-
-    # Group by Outlet and Year-Month to get monthly snapshots
-    # We include Distributor_ID to join seasonality later
+    
+    # Calculate monthly snaps and find the last month's sales
     monthly_tx = tx.groupby(['Outlet_ID', 'Year', 'Month']).agg({
-        'Volume_Liters': 'sum',
-        'Total_Bill_Value': 'sum',
-        'Outlet_ID': 'count',
-        'Distributor_ID': 'first' 
-    }).rename(columns={'Outlet_ID': 'order_frequency'}).reset_index()
-
-    # Features:
-    # monthly_avg_sales, historical_max_sales, sales_std
-    outlet_features = monthly_tx.groupby('Outlet_ID').agg({
-        'Volume_Liters': ['mean', 'max', 'std', 'last'],
-        'order_frequency': 'mean',
-        'Distributor_ID': 'first'
-    })
+        'Volume_Liters': 'sum'
+    }).reset_index()
     
-    outlet_features.columns = [
-        'monthly_avg_sales', 
-        'historical_max_sales', 
-        'sales_std', 
-        'last_month_sales',
-        'avg_order_frequency',
-        'Distributor_ID'
-    ]
+    last_sales = monthly_tx.groupby('Outlet_ID')['Volume_Liters'].last().reset_index()
+    last_sales.columns = ['Outlet_ID', 'last_month_sales']
     
-    # Calculate Temporal Stability Score (1 - CV, capped at 1)
-    # High stability (near 1) = Consistent demand. Low stability = Volatile.
-    cv = outlet_features['sales_std'] / (outlet_features['monthly_avg_sales'] + 1e-6)
-    outlet_features['temporal_stability_score'] = np.clip(1 - (cv / 2), 0, 1)
-    
-    outlet_features = outlet_features.reset_index()
-    
-    # Growth Rate (Simple: last month vs average)
-    outlet_features['growth_rate'] = (outlet_features['last_month_sales'] / outlet_features['monthly_avg_sales']) - 1
-    
-    # Inactive Days (Recency)
-    # Ensure Date is datetime for calculation
+    # Calculate Inactive Days (Recency)
     tx['Date'] = pd.to_datetime(tx['Date'])
     max_date = tx['Date'].max()
-    
     recency = tx.groupby('Outlet_ID')['Date'].max().reset_index()
     recency.columns = ['Outlet_ID', 'Last_Date']
     recency['inactive_days'] = (max_date - recency['Last_Date']).dt.days
     
-    outlet_features = outlet_features.merge(recency[['Outlet_ID', 'inactive_days']], on='Outlet_ID', how='left')
-
-    # IMPORTANT: Wipe the massive transaction data from RAM to prevent crashing!
+    # Release massive memory
     del tx
-    import gc
     gc.collect()
-    logger.info("Transaction memory released.")
-
-    # 3. Metadata (Already present in merged Gold dataset)
-    # No extra merge needed
-
-    # 4. Seasonality Score (Already merged in Gold, but ensuring Month 1)
-    if 'Seasonality_Index' not in outlet_features.columns:
-        logger.warning("Seasonality_Index missing from gold dataset.")
-        outlet_features['Seasonality_Index'] = 1.0
-
-    # 5. POI Score & Competitor Density (Advanced Spatial Features)
-    decay_path = gold_path / "distance_decay_features.csv"
-    comp_path = gold_path / "competitor_density_features.csv"
+    logger.info("Transaction detail memory released.")
     
-    if decay_path.exists() and comp_path.exists():
+    # --- Step 3: Load and Merge Modular Gold Features ---
+    logger.info("Merging clean outlet master and modular features...")
+    
+    # A. Clean Master
+    master_file = silver_path / "clean_outlet_master.csv"
+    if not master_file.exists():
+        raise FileNotFoundError(f"Missing master file: {master_file}")
+    df_master = pd.read_csv(master_file, dtype={"Outlet_ID": "str"})
+    
+    # Resolve Distributor_ID and Province from clean transactions dynamically
+    tx_file = silver_path / "clean_transactions.csv"
+    if tx_file.exists():
+        logger.info("Resolving Distributor_ID mappings from clean transactions...")
+        df_tx = pd.read_csv(tx_file, usecols=["Outlet_ID", "Distributor_ID"], dtype=str)
+        dist_map = df_tx.drop_duplicates(subset=["Outlet_ID"]).set_index("Outlet_ID")["Distributor_ID"].to_dict()
+        df_master["Distributor_ID"] = df_master["Outlet_ID"].map(dist_map)
+    else:
+        df_master["Distributor_ID"] = "Unknown"
+        
+    df_master["Distributor_ID"] = df_master["Distributor_ID"].fillna("Unknown")
+    
+    # Map Province from Distributor_ID
+    def get_province(dist_id):
+        dist_str = str(dist_id)
+        if '_W_' in dist_str: return 'Western'
+        if '_C_' in dist_str: return 'Central'
+        if '_NW_' in dist_str: return 'North-Western'
+        if '_S_' in dist_str: return 'Southern'
+        return 'Other'
+        
+    df_master['Province'] = df_master['Distributor_ID'].apply(get_province)
+    
+    # B. Sales Features
+    sales_file = gold_path / "sales_features.csv"
+    df_sales = pd.read_csv(sales_file, dtype={"Outlet_ID": "str"})
+    
+    # C. Seasonality Features
+    season_file = gold_path / "seasonality_features.csv"
+    df_season = pd.read_csv(season_file, dtype={"Outlet_ID": "str"})
+    
+    # Start merging
+    merged = df_master.merge(df_sales, on="Outlet_ID", how="left")
+    merged = merged.merge(df_season, on="Outlet_ID", how="left")
+    merged = merged.merge(last_sales, on="Outlet_ID", how="left")
+    merged = merged.merge(recency[['Outlet_ID', 'inactive_days']], on="Outlet_ID", how="left")
+    
+    # D. Spatial Features
+    spatial_file = gold_path / "spatial_features.csv"
+    if spatial_success and spatial_file.exists():
         logger.info("Merging advanced POI and competitor density features...")
-        df_decay = pd.read_csv(decay_path)
-        df_comp = pd.read_csv(comp_path)
+        df_spatial = pd.read_csv(spatial_file, dtype={"Outlet_ID": "str"})
+        merged = merged.merge(df_spatial, on="Outlet_ID", how="left")
         
-        # Map features correctly:
-        # poi_score -> total_poi_decay_score
-        # market_saturation_index -> market_saturation_index
-        df_decay_subset = df_decay[['Outlet_ID', 'total_poi_decay_score']].rename(columns={'total_poi_decay_score': 'poi_score'})
-        df_comp_subset = df_comp[['Outlet_ID', 'market_saturation_index', 'competitor_decay_score']].rename(columns={'competitor_decay_score': 'competitor_density'})
+        # Mapping compatibility fields for existing models
+        merged['poi_score'] = merged['total_poi_decay_score']
+        merged['competitor_density'] = merged['competitor_decay_score']
         
-        spatial_features = df_decay_subset.merge(df_comp_subset, on='Outlet_ID', how='left')
-        
-        # Calculate competitive pressure (Outlet Density) via KD-Tree on coordinates
+        # Calculate competitive pressure (outlet density) via SciPy KD-Tree
         coord_path = Path("data/silver/outlet_coordinates.parquet")
         if coord_path.exists():
-            logger.info("Calculating competitive pressure (Outlet Density)...")
             coords_df = pd.read_parquet(coord_path).dropna(subset=['Latitude', 'Longitude'])
             from scipy.spatial import cKDTree
             tree = cKDTree(coords_df[['Latitude', 'Longitude']].values)
+            # Find outlets within ~1km grid
             density = tree.query_ball_point(coords_df[['Latitude', 'Longitude']].values, r=0.009)
-            
             density_map = pd.DataFrame({
                 'Outlet_ID': coords_df['Outlet_ID'],
                 'outlet_density': [len(d) - 1 for d in density]
             })
-            spatial_features = spatial_features.merge(density_map, on='Outlet_ID', how='left')
+            merged = merged.merge(density_map, on='Outlet_ID', how='left')
         else:
-            logger.warning("Silver coordinates missing. Skipping outlet density.")
-            spatial_features['outlet_density'] = 0.0
-            
-        outlet_features = outlet_features.merge(spatial_features, on='Outlet_ID', how='left')
+            merged['outlet_density'] = 0.0
     else:
-        logger.info("Advanced spatial features not found. Skipping spatial features.")
-        outlet_features['poi_score'] = 0.0
-        outlet_features['outlet_density'] = 0.0
-        outlet_features['market_saturation_index'] = 0.0
-
-    # 6. Censoring Indicator
-    # A crucial part for latent demand: Is the observed max limited by supply?
-    # Logic: If last month's sales is near the historical max, it might be censored.
-    outlet_features['is_censored'] = (outlet_features['last_month_sales'] >= 0.95 * outlet_features['historical_max_sales']).astype(int)
-
-    # Final Cleanup
-    # Fill NaNs only in numeric columns to avoid issues with categorical columns (like Distributor_ID)
-    numeric_cols = outlet_features.select_dtypes(include=[np.number]).columns
-    outlet_features[numeric_cols] = outlet_features[numeric_cols].fillna(0)
+        logger.warning("Spatial features not found or skipped. Setting spatial columns to default 0.0.")
+        merged['poi_score'] = 0.0
+        merged['competitor_density'] = 0.0
+        merged['market_saturation_index'] = 0.0
+        merged['spatial_opportunity_score'] = 0.0
+        merged['outlet_density'] = 0.0
+        merged['bus_stop_decay_score'] = 0.0
+        merged['school_decay_score'] = 0.0
+        merged['hospital_decay_score'] = 0.0
+        merged['restaurant_decay_score'] = 0.0
+        merged['fuel_station_decay_score'] = 0.0
+        merged['tourist_place_decay_score'] = 0.0
+        merged['total_poi_decay_score'] = 0.0
+        
+    # --- Step 4: Construct Compatibility & Model Columns ---
+    logger.info("Structuring backward-compatibility fields for train_model.py...")
     
-    # Save to Gold
+    # Model variables mapping
+    merged['monthly_avg_sales'] = merged['avg_monthly_liters']
+    merged['historical_max_sales'] = merged['max_monthly_liters']
+    merged['sales_std'] = merged['std_monthly_liters']
+    merged['avg_order_frequency'] = merged['purchase_frequency']
+    merged['Seasonality_Index'] = merged['distributor_january_seasonality']
+    
+    # Temporal Stability Score (1 - CV, capped at [0,1])
+    merged['temporal_stability_score'] = np.clip(1 - (merged['sales_volatility'] / 2.0), 0, 1)
+    
+    # Growth Rate: last month vs monthly average
+    merged['growth_rate'] = (merged['last_month_sales'] / (merged['monthly_avg_sales'] + 1e-6)) - 1.0
+    
+    # Censoring indicator
+    merged['is_censored'] = (merged['last_month_sales'] >= 0.95 * merged['historical_max_sales']).astype(int)
+    
+    # Clean up any missing numbers in numerical fields
+    numeric_cols = merged.select_dtypes(include=[np.number]).columns
+    merged[numeric_cols] = merged[numeric_cols].fillna(0.0)
+    
+    # --- Step 5: Save Output to Gold ---
     output_file = gold_path / "model_features.csv"
-    outlet_features.to_csv(output_file, index=False)
-    logger.info(f"Successfully saved {len(outlet_features)} features to {output_file}")
+    merged.to_csv(output_file, index=False)
+    logger.info(f"Master feature compilation finished successfully! Saved {len(merged)} records to: {output_file}")
+    logger.info("=== Master Feature Engineering Completed ===")
 
 if __name__ == "__main__":
     build_features()
