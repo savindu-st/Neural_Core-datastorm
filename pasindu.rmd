@@ -1,0 +1,360 @@
+Member 2 — Modeling + Budget Optimization
+Main Responsibility
+
+Member 2 handles the model, latent potential prediction, confidence score, outlet segmentation, and Western Province budget allocation.
+
+This part supports Methodology and Framework Design, which has 30% weight.
+
+Member 2 Files to Create / Maintain
+1. src/features/sales_features.py
+
+Purpose:
+Create historical sales-based features.
+
+Input:
+
+data/silver/clean_transactions.csv
+
+Output:
+
+data/gold/sales_features.csv
+
+Features to create:
+
+avg_monthly_liters
+max_monthly_liters
+min_monthly_liters
+std_monthly_liters
+recent_3_month_avg
+recent_6_month_avg
+purchase_frequency
+sales_trend
+sales_volatility
+zero_sales_months
+
+How to run:
+
+python src/features/sales_features.py
+2. src/features/seasonality_features.py
+
+Purpose:
+Add January 2026 distributor seasonality.
+
+Input:
+
+data/silver/clean_transactions.csv
+data/silver/raw_seasonality_loaded.csv
+
+Output:
+
+data/gold/seasonality_features.csv
+
+Features to create:
+
+distributor_january_seasonality
+holiday_count_jan2026
+province_seasonality_index
+
+How to run:
+
+python src/features/seasonality_features.py
+3. src/features/spatial_features.py
+
+Purpose:
+Merge Member 1’s POI decay and competitor features into model-ready format.
+
+Input files:
+
+data/gold/distance_decay_features.csv
+data/gold/competitor_density_features.csv
+
+Output file:
+
+data/gold/spatial_features.csv
+
+What it does:
+
+1. Reads distance-decay features.
+2. Reads competitor density features.
+3. Normalizes spatial scores.
+4. Creates final spatial opportunity score.
+
+How to run:
+
+python src/features/spatial_features.py
+4. src/features/build_features.py
+
+Purpose:
+Build the final model dataset.
+
+Input files:
+
+data/silver/clean_outlet_master.csv
+data/gold/sales_features.csv
+data/gold/seasonality_features.csv
+data/gold/spatial_features.csv
+
+Output file:
+
+data/gold/model_features.csv
+
+Final features:
+
+Outlet_ID
+Province
+Distributor_ID
+avg_monthly_liters
+max_monthly_liters
+recent_3_month_avg
+purchase_frequency
+sales_trend
+sales_volatility
+distributor_january_seasonality
+bus_stop_decay_score
+restaurant_decay_score
+school_decay_score
+competitor_decay_score
+market_saturation_index
+spatial_opportunity_score
+
+How to run:
+
+python src/features/build_features.py
+5. src/models/censored_regression.py
+
+Purpose:
+Handle censored demand logic.
+
+Why important:
+The challenge is not just predicting historical sales. It is estimating latent maximum potential, because historical sales may be constrained by stockouts, credit limits, supply issues, and cooler capacity.
+
+What it does:
+
+1. Identifies capped or constrained historical sales patterns.
+2. Estimates latent demand adjustment factor.
+3. Creates uncapped target variable.
+4. Supports Tobit-style explanation in methodology paper.
+
+Output:
+
+data/gold/censored_adjusted_training_data.csv
+
+How to run:
+
+python src/models/censored_regression.py
+6. src/models/train_model.py
+
+Purpose:
+Train the final latent potential model.
+
+Input:
+
+data/gold/model_features.csv
+
+Output files:
+
+models/potential_model.pkl
+models/feature_columns.pkl
+models/feature_importance.csv
+models/model_metrics.json
+
+Model options:
+
+Random Forest
+XGBoost
+LightGBM
+Gradient Boosting
+
+What it does:
+
+1. Splits training and validation data.
+2. Trains potential prediction model.
+3. Saves trained model.
+4. Saves feature importance.
+5. Saves validation metrics.
+
+How to run:
+
+python src/models/train_model.py
+7. src/models/calibrate_potential.py
+
+Purpose:
+Calibrate predictions into realistic maximum monthly potential.
+
+Input:
+
+data/gold/model_features.csv
+models/potential_model.pkl
+
+Output:
+
+data/gold/calibrated_potential.csv
+
+What it does:
+
+1. Prevents unrealistic predictions.
+2. Applies business minimum and maximum limits.
+3. Ensures predicted potential is not below recent observed sales.
+4. Applies January seasonality adjustment.
+
+How to run:
+
+python src/models/calibrate_potential.py
+8. src/models/predict.py
+
+Purpose:
+Generate final prediction CSV.
+
+Input:
+
+data/gold/calibrated_potential.csv
+
+Output:
+
+outputs/predictions/quadnova_predictions.csv
+
+Required columns:
+
+Outlet_ID
+Maximum_Monthly_Liters
+
+The final round requires this prediction output file.
+
+How to run:
+
+python src/models/predict.py
+9. src/models/model_interpretability.py
+
+Purpose:
+Generate model-level explanations and feature importance.
+
+Input:
+
+models/potential_model.pkl
+data/gold/model_features.csv
+
+Output files:
+
+models/feature_importance.csv
+outputs/charts/feature_importance_chart.png
+data/gold/model_driver_table.csv
+
+What it does:
+
+1. Extracts feature importance.
+2. Finds top drivers for each outlet.
+3. Prepares data for XAI explanation layer.
+
+How to run:
+
+python src/models/model_interpretability.py
+10. src/optimization/roi_calculator.py
+
+Purpose:
+Calculate expected return on trade spend.
+
+Input:
+
+data/gold/calibrated_potential.csv
+data/gold/model_features.csv
+
+Output:
+
+data/gold/roi_table.csv
+
+Features to create:
+
+potential_gap
+expected_incremental_liters
+expected_roi_per_lkr
+risk_adjusted_roi
+
+Formula idea:
+
+potential_gap = Maximum_Monthly_Liters - avg_monthly_liters
+risk_adjusted_roi = expected_roi_per_lkr * confidence_score
+
+How to run:
+
+python src/optimization/roi_calculator.py
+11. src/optimization/allocation_constraints.py
+
+Purpose:
+Define practical business rules for budget allocation.
+
+Rules to include:
+
+Total Western Province budget must be <= 5,000,000 LKR
+Only Western Province outlets are eligible
+Minimum allocation per selected outlet
+Maximum allocation per selected outlet
+Do not allocate to very low confidence outlets
+Ensure distributor fairness
+Prioritize high ROI and high potential gap
+
+Used by:
+
+budget_optimizer.py
+12. src/optimization/budget_optimizer.py
+
+Purpose:
+Allocate LKR 5 million trade spend across Western Province outlets.
+
+The final round specifically asks for an optimization model that distributes a fixed LKR 5 million Western Province budget to maximize additional sales volume.
+
+Input files:
+
+data/gold/roi_table.csv
+data/gold/model_features.csv
+
+Output file:
+
+outputs/predictions/quadnova_budget_allocations.csv
+
+Required columns:
+
+Outlet_ID
+Trade_Spend_Allocation_LKR
+
+How it works:
+
+1. Filter Western Province outlets only.
+2. Calculate potential gap.
+3. Calculate ROI score.
+4. Remove very low confidence outlets.
+5. Allocate budget based on risk-adjusted ROI.
+6. Apply min/max outlet spend rules.
+7. Ensure total spend does not exceed 5,000,000.
+8. Save budget allocation CSV.
+
+How to run:
+
+python src/optimization/budget_optimizer.py
+Member 2 Improvements / Wow Factors
+
+Member 2 should add:
+
+1. Prediction confidence score.
+2. Outlet opportunity segmentation.
+3. ROI-based budget allocation.
+4. Distributor fairness rule.
+5. Risk-adjusted allocation.
+Segmentation logic
+Underserved Gems:
+High potential gap + low competition + high confidence
+
+Mature Stars:
+High potential + high current sales + high confidence
+
+Competitive Fighters:
+High potential + high competition
+
+Low Priority:
+Low potential gap + low ROI
+
+At-Risk Outlets:
+Low confidence + unstable sales + high competition
+
+Output file:
+
+data/gold/outlet_segments.csv

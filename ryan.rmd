@@ -1,0 +1,279 @@
+Member 3 — XAI + Web App + Business Story
+Main Responsibility
+
+Member 3 handles outlet-level explanations, GenAI prompts, Streamlit web app, final technical paper, pitch deck, and demo script.
+
+This part supports Business Viability and Explainability and Generative AI Utilization, worth 25% and 15%.
+
+Member 3 Files to Create / Maintain
+1. src/xai/prompt_templates.py
+
+Purpose:
+Store reusable GenAI explanation prompts.
+
+Example prompt template:
+
+You are a business analyst explaining outlet sales potential to a beverage company executive.
+
+Outlet ID: {Outlet_ID}
+Predicted Potential: {Maximum_Monthly_Liters}
+Current Average Sales: {avg_monthly_liters}
+Potential Gap: {potential_gap}
+Top Positive Drivers: {positive_drivers}
+Top Negative Drivers: {negative_drivers}
+Competitor Level: {competition_level}
+Confidence Score: {confidence_score}
+Recommended Spend: {Trade_Spend_Allocation_LKR}
+
+Write a simple business explanation in 4 sentences:
+1. Why the outlet received this score.
+2. What factors increased the score.
+3. What factors reduced or constrained the score.
+4. What action the sales team should take.
+2. src/xai/outlet_reasoning.py
+
+Purpose:
+Create rule-based business explanations without depending fully on API calls.
+
+Input files:
+
+data/gold/model_driver_table.csv
+data/gold/outlet_segments.csv
+outputs/predictions/quadnova_budget_allocations.csv
+
+Output file:
+
+outputs/predictions/outlet_explanations.csv
+
+Columns:
+
+Outlet_ID
+Predicted_Potential
+Segment
+Confidence_Level
+Top_Positive_Drivers
+Top_Negative_Drivers
+Recommended_Action
+Business_Explanation
+
+What it does:
+
+1. Reads prediction and driver data.
+2. Identifies top positive and negative drivers.
+3. Assigns recommended business action.
+4. Generates simple explanation text.
+
+How to run:
+
+python src/xai/outlet_reasoning.py
+3. src/xai/genai_explainer.py
+
+Purpose:
+Optional GenAI-enhanced explanation layer.
+
+The problem statement requires GenAI/XAI to be user-facing and explain model decisions in simple business language.
+
+Input:
+
+outputs/predictions/outlet_explanations.csv
+
+Output:
+
+outputs/predictions/outlet_explanations_genai.csv
+reports/genai_log.md
+
+What it does:
+
+1. Sends structured outlet facts to an LLM.
+2. Generates business explanation.
+3. Stores prompts and responses.
+4. Logs how GenAI was used.
+
+Important:
+Keep rule-based explanation as backup. If API fails, the app still works.
+
+How to run:
+
+python src/xai/genai_explainer.py
+4. app/streamlit_app.py
+
+Purpose:
+Main Outlet Intelligence Web App.
+
+The final round requires a functional app where business users can browse predictions, filter by province/distributor, and drill into outlet-level reasoning.
+
+Input files:
+
+outputs/predictions/quadnova_predictions.csv
+outputs/predictions/quadnova_budget_allocations.csv
+outputs/predictions/outlet_explanations.csv
+data/gold/model_features.csv
+data/gold/outlet_segments.csv
+
+App pages / sections:
+
+1. Executive Overview
+2. Outlet Explorer
+3. Budget Allocation
+4. XAI Explanation
+5. Data Quality Evidence
+
+Features:
+
+filter by province
+filter by distributor
+search by Outlet_ID
+view predicted potential
+view current average sales
+view potential gap
+view recommended budget allocation
+view outlet segment
+view confidence score
+view business explanation
+
+How to run:
+
+streamlit run app/streamlit_app.py
+5. app/pages/1_Outlet_Explorer.py
+
+Purpose:
+Outlet-level browsing page.
+
+What it shows:
+
+Outlet_ID
+Province
+Distributor_ID
+Maximum_Monthly_Liters
+Segment
+Confidence Score
+Competition Level
+
+Filters:
+
+Province
+Distributor
+Segment
+Confidence Level
+6. app/pages/2_Budget_Allocation.py
+
+Purpose:
+Show Western Province LKR 5M budget allocation.
+
+What it shows:
+
+Total budget used
+Budget by distributor
+Top funded outlets
+Expected incremental liters
+Risk-adjusted ROI
+
+Charts:
+
+Distributor allocation bar chart
+Top 20 outlet allocation chart
+ROI vs allocation scatter plot
+7. app/pages/3_XAI_Explanation.py
+
+Purpose:
+Outlet drill-down explanation page.
+
+What it shows:
+
+Selected Outlet_ID
+Prediction
+Potential gap
+Top positive drivers
+Top negative drivers
+Business explanation
+Recommended action
+Confidence level
+8. app/pages/4_Data_Quality.py
+
+Purpose:
+Show data quality and rejected records evidence.
+
+What it shows:
+
+Total raw records
+Clean records
+Rejected records
+Rejection reasons
+Coordinate quality summary
+Missing value summary
+9. reports/final_methodology_paper.md
+
+Purpose:
+Draft the 10-page technical paper.
+
+The paper must explain data engineering, scraping pipeline, data cleaning, mathematical framework, spend optimization, and GenAI transparency log.
+
+Structure:
+
+1. Cover Page
+2. Executive Summary
+3. Data Engineering and Lakehouse Pipeline
+4. External POI and Spatial Feature Engineering
+5. Data Cleaning and Rejected Records
+6. Mathematical Framework for Latent Potential
+7. Marketing Spend Optimization Logic
+8. XAI and GenAI Explanation Layer
+9. Business Impact and Deployment
+10. GenAI Transparency Log
+10. reports/executive_pitch_script.md
+
+Purpose:
+10-minute pitch script.
+
+Structure:
+
+Slide 1: Problem and Big Idea
+Slide 2: Why historical sales are misleading
+Slide 3: Our Potential-Based Allocation Engine
+Slide 4: Data Engineering Pipeline
+Slide 5: Spatial Intelligence and Competition
+Slide 6: Latent Potential Model
+Slide 7: LKR 5M Budget Allocation Strategy
+Slide 8: Outlet Intelligence Web App
+Slide 9: Business Impact
+Slide 10: Rollout Plan and Closing
+
+The pitch deck must be capped at 10 slides and explain the framework to non-technical C-suite leaders.
+
+11. reports/genai_log.md
+
+Purpose:
+Document how GenAI was used honestly.
+
+Include:
+
+Prompt used
+Purpose of prompt
+Output summary
+Human validation step
+What was accepted
+What was rejected
+Final decision
+
+Example entry:
+
+Prompt Purpose:
+Generate business-friendly outlet explanation from structured model drivers.
+
+Human Validation:
+Checked whether generated explanation matched actual top drivers and did not invent unsupported reasons.
+
+Accepted:
+Clear explanation structure.
+
+Rejected:
+Any sentence that claimed causal impact without evidence.
+Member 3 Improvements / Wow Factors
+
+Member 3 should add:
+
+1. Dynamic outlet explanation.
+2. Business action recommendation.
+3. Budget scenario simulator.
+4. Executive dashboard.
+5. GenAI transparency log.

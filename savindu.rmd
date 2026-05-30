@@ -1,0 +1,276 @@
+Member 1 — Data Engineering + Spatial Intelligence
+Main Responsibility
+
+Member 1 handles all data pipeline work: raw data loading, cleaning, rejected records, POI scraping, distance-decay features, and competitor density.
+
+This part directly supports the judging criteria for Data Engineering and Feature Creation, which has 30% weight.
+
+Member 1 Files to Create / Maintain
+1. src/data_pipeline/ingest.py
+
+Purpose:
+Load all raw CSV files from data/bronze/.
+
+Input files:
+
+data/bronze/transactions_history_final.csv
+data/bronze/outlet_master.csv
+data/bronze/distributor_seasonality_details.csv
+data/bronze/holiday_list.csv
+
+Output files:
+
+data/silver/raw_transactions_loaded.csv
+data/silver/raw_outlet_master_loaded.csv
+data/silver/raw_seasonality_loaded.csv
+data/silver/raw_holidays_loaded.csv
+
+What it does:
+
+1. Reads raw CSV files.
+2. Standardizes column names.
+3. Checks whether required columns exist.
+4. Saves loaded datasets into silver layer.
+
+How to run:
+
+python src/data_pipeline/ingest.py
+2. src/data_pipeline/dq_checks.py
+
+Purpose:
+Reusable data quality validation functions.
+
+Checks to include:
+
+missing value check
+duplicate Outlet_ID check
+invalid coordinate check
+negative sales/volume check
+invalid date check
+invalid distributor/province check
+outlier detection
+
+Output files:
+
+outputs/evidence/data_quality_summary.csv
+data/rejected/rejected_records.csv
+
+What it does:
+
+1. Checks each input table.
+2. Flags invalid records.
+3. Separates good records and bad records.
+4. Sends bad records to rejected store.
+
+How to run:
+This file is usually imported by clean.py.
+
+from src.data_pipeline.dq_checks import run_quality_checks
+3. src/data_pipeline/rejected_store.py
+
+Purpose:
+Manage rejected records systematically.
+
+Output files:
+
+data/rejected/rejected_transactions.csv
+data/rejected/rejected_outlets.csv
+data/rejected/rejected_summary.csv
+
+What it does:
+
+1. Stores invalid records.
+2. Adds rejection reason.
+3. Adds rejection timestamp.
+4. Helps explain data cleaning in final report.
+4. src/data_pipeline/clean.py
+
+Purpose:
+Clean dirty master and transaction data.
+
+Input files:
+
+data/silver/raw_transactions_loaded.csv
+data/silver/raw_outlet_master_loaded.csv
+
+Output files:
+
+data/silver/clean_transactions.csv
+data/silver/clean_outlet_master.csv
+
+What it does:
+
+1. Removes duplicates.
+2. Fixes missing or invalid values.
+3. Handles invalid longitude/latitude.
+4. Removes impossible sales values.
+5. Sends corrupted rows to rejected records.
+
+How to run:
+
+python src/data_pipeline/clean.py
+5. src/scraper/overpass_client.py
+
+Purpose:
+Reusable Overpass API client for POI extraction.
+
+What it does:
+
+1. Connects to Overpass API.
+2. Sends bounding box queries.
+3. Collects POIs such as bus stops, schools, hospitals, restaurants, fuel stations, tourist places.
+4. Returns clean POI dataframe.
+
+Used by:
+
+poi_fast_scraper.py
+competitor_scraper.py
+6. src/scraper/poi_fast_scraper.py
+
+Purpose:
+Collect external POI data.
+
+Input:
+
+data/silver/clean_outlet_master.csv
+
+Output:
+
+data/gold/poi_data.csv
+
+POI categories:
+
+bus_stops
+schools
+hospitals
+fuel_stations
+restaurants
+tourist_attractions
+
+What it does:
+
+1. Builds province/district bounding boxes.
+2. Downloads POI data.
+3. Cleans POI names and coordinates.
+4. Saves POI dataset.
+
+How to run:
+
+python src/scraper/poi_fast_scraper.py
+7. src/scraper/competitor_scraper.py
+
+Purpose:
+Collect nearby competitor outlet data from external location sources.
+
+Output:
+
+data/gold/competitor_poi_data.csv
+
+Competitor categories:
+
+shops
+convenience stores
+groceries
+kades
+supermarkets
+restaurants/eateries
+pharmacies
+
+What it does:
+
+1. Uses external location data.
+2. Extracts competing retail outlets.
+3. Saves competitor POI data.
+8. src/spatial/distance_utils.py
+
+Purpose:
+Common distance calculation helper functions.
+
+Functions to include:
+
+haversine_distance(lat1, lon1, lat2, lon2)
+calculate_nearest_distance(outlet_df, poi_df)
+calculate_radius_count(outlet_df, poi_df, radius_m)
+
+What it does:
+
+Calculates distance between outlets and POIs using latitude and longitude.
+9. src/spatial/distance_decay.py
+
+Purpose:
+Create distance-decay POI scores.
+
+The problem statement says simple fixed-radius POI counts are not enough; closer POIs should have stronger influence than distant ones.
+
+Input files:
+
+data/silver/clean_outlet_master.csv
+data/gold/poi_data.csv
+
+Output file:
+
+data/gold/distance_decay_features.csv
+
+Features to generate:
+
+bus_stop_decay_score
+school_decay_score
+hospital_decay_score
+restaurant_decay_score
+fuel_station_decay_score
+tourist_place_decay_score
+total_poi_decay_score
+nearest_bus_stop_distance
+nearest_school_distance
+nearest_restaurant_distance
+
+Formula example:
+
+decay_score = exp(-distance_m / decay_factor)
+
+How to run:
+
+python src/spatial/distance_decay.py
+10. src/spatial/catchment_density.py
+
+Purpose:
+Calculate competitor density and market saturation.
+
+The problem statement requires estimating how crowded or isolated each outlet’s local market is.
+
+Input files:
+
+data/silver/clean_outlet_master.csv
+data/gold/competitor_poi_data.csv
+
+Output file:
+
+data/gold/competitor_density_features.csv
+
+Features to generate:
+
+competitor_count_250m
+competitor_count_500m
+competitor_count_1000m
+competitor_decay_score
+market_saturation_index
+competition_level
+
+Competition level example:
+
+Low Competition
+Medium Competition
+High Competition
+
+How to run:
+
+python src/spatial/catchment_density.py
+Member 1 Improvements / Wow Factors
+
+Member 1 should add these improvements:
+
+1. Distance-decay POI influence instead of simple POI count.
+2. Competitor catchment density.
+3. Coordinate quality score.
+4. Rejected records summary dashboard data.
+5. Market saturation index.
