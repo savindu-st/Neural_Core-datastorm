@@ -1,4 +1,7 @@
 dataset,rejection_reason,count
-unknown,Geospatial Out-of-Bounds/Format,240
-unknown,Mandatory Field Null (Outlet_Size),196
-unknown,System Artifact (Statistical Outlier),28764
+outlet_coordinates,Geospatial Out-of-Bounds/Format,41
+outlet_master,Mandatory Field Null (Outlet_Size),197
+transactions,Transaction Validation: negative_bill,4754
+transactions,Transaction Validation: negative_volume,4854
+transactions,Transaction Validation: referential_orphan,11605
+transactions,Transaction Validation: statistical_outlier,28765
