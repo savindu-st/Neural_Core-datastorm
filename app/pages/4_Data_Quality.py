@@ -7,33 +7,56 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from pathlib import Path
+import os
+import sys
+
+# Always resolve paths from project root
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+os.chdir(PROJECT_ROOT)
+sys.path.append(str(PROJECT_ROOT / 'app'))
+from styles import apply_modern_theme
 
 
+@st.cache_data
 def load_data():
-    """Load data quality information."""
+    """Load data quality information and enriched predictions."""
     try:
         predictions = pd.read_csv('outputs/predictions/quadnova_predictions.csv')
-        
-        quality_summary = None
-        rejected_reasons = None
-        risk_summary = None
-        
-        if Path('outputs/evidence/data_quality_summary.csv').exists():
-            quality_summary = pd.read_csv('outputs/evidence/data_quality_summary.csv')
-        
-        if Path('outputs/evidence/rejected_reason_counts.csv').exists():
-            rejected_reasons = pd.read_csv('outputs/evidence/rejected_reason_counts.csv')
-        
-        if Path('outputs/evidence/risk_summary.csv').exists():
-            risk_summary = pd.read_csv('outputs/evidence/risk_summary.csv')
-        
-        return predictions, quality_summary, rejected_reasons, risk_summary
     except FileNotFoundError as e:
         st.error(f"Data file not found: {e}")
         return None, None, None, None
 
+    # Merge features and segments to get Latitude, Longitude, and confidence_score
+    try:
+        features = pd.read_csv('data/gold/model_features.csv')
+        predictions = predictions.merge(features[['Outlet_ID', 'Latitude', 'Longitude']], on='Outlet_ID', how='left')
+    except FileNotFoundError:
+        pass
+
+    try:
+        segments = pd.read_csv('data/gold/outlet_segments.csv')
+        predictions = predictions.merge(segments[['Outlet_ID', 'confidence_score']], on='Outlet_ID', how='left')
+    except FileNotFoundError:
+        pass
+
+    quality_summary = None
+    rejected_reasons = None
+    risk_summary = None
+
+    if Path('outputs/evidence/data_quality_summary.csv').exists():
+        quality_summary = pd.read_csv('outputs/evidence/data_quality_summary.csv')
+
+    if Path('outputs/evidence/rejected_reason_counts.csv').exists():
+        rejected_reasons = pd.read_csv('outputs/evidence/rejected_reason_counts.csv')
+
+    if Path('outputs/evidence/risk_summary.csv').exists():
+        risk_summary = pd.read_csv('outputs/evidence/risk_summary.csv')
+
+    return predictions, quality_summary, rejected_reasons, risk_summary
+
 
 st.set_page_config(page_title="Data Quality", page_icon="🔍", layout="wide")
+apply_modern_theme()
 
 st.title("🔍 Data Quality & Rejected Records Evidence")
 st.write("Quality assurance and data cleaning pipeline transparency")
@@ -69,6 +92,8 @@ with col4:
     if total_records != "N/A" and rejected_count > 0:
         rejection_rate = (rejected_count / (clean_records + rejected_count)) * 100
         st.metric("Rejection Rate", f"{rejection_rate:.1f}%")
+    else:
+        st.metric("Rejection Rate", "N/A")
 
 # Rejection Reasons
 st.subheader("Rejection Reasons Breakdown")
@@ -80,7 +105,7 @@ if rejected_reasons is not None and len(rejected_reasons) > 0:
         title='Rejected Records by Reason'
     )
     st.plotly_chart(fig, use_container_width=True)
-    
+
     st.dataframe(rejected_reasons, use_container_width=True)
 else:
     st.info("No rejection reason data available")
@@ -96,8 +121,8 @@ missing_data = predictions.isnull().sum()
 missing_data = missing_data[missing_data > 0].sort_values(ascending=False)
 if len(missing_data) > 0:
     fig = px.bar(
-        missing_data,
-        labels={'index': 'Column', 'value': 'Missing Count'},
+        x=missing_data.index, y=missing_data.values,
+        labels={'x': 'Column', 'y': 'Missing Count'},
         title='Missing Values by Column'
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -110,7 +135,7 @@ if 'Latitude' in predictions.columns and 'Longitude' in predictions.columns:
     valid_coords = predictions.dropna(subset=['Latitude', 'Longitude'])
     coord_quality = (len(valid_coords) / len(predictions)) * 100
     st.metric("Valid Coordinates", f"{coord_quality:.1f}%")
-    
+
     if len(valid_coords) > 0:
         fig = px.scatter_geo(
             valid_coords,
@@ -121,6 +146,8 @@ if 'Latitude' in predictions.columns and 'Longitude' in predictions.columns:
             projection='natural earth'
         )
         st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Coordinate data not available.")
 
 # Risk Summary
 st.subheader("Risk Summary")
@@ -128,9 +155,11 @@ if risk_summary is not None and len(risk_summary) > 0:
     st.dataframe(risk_summary, use_container_width=True)
 else:
     # Show basic risk stats
-    if 'Confidence_Score' in predictions.columns:
-        low_confidence = len(predictions[predictions['Confidence_Score'] < 0.6])
+    if 'confidence_score' in predictions.columns:
+        low_confidence = len(predictions[predictions['confidence_score'] < 0.6])
         st.write(f"⚠️ **{low_confidence}** outlets with confidence score < 0.6 (requires manual review)")
+    else:
+        st.info("Risk summary data not available.")
 
 # Data Sources
 st.subheader("Data Sources & Integrity")

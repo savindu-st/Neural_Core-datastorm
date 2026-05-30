@@ -427,4 +427,4 @@ Fix: Delete .gemini_cache.json and regenerate
 
 
 if __name__ == '__main__':
-    enhance_explanations_with_genai()
+    enhance_explanations_with_gemini()

@@ -6,6 +6,15 @@ Outlet drill-down page showing model explanations and drivers.
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from pathlib import Path
+import os
+import sys
+
+# Always resolve paths from project root
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+os.chdir(PROJECT_ROOT)
+sys.path.append(str(PROJECT_ROOT / 'app'))
+from styles import apply_modern_theme
 
 
 def load_data():
@@ -20,6 +29,7 @@ def load_data():
 
 
 st.set_page_config(page_title="XAI Explanation", page_icon="🔬", layout="wide")
+apply_modern_theme()
 
 st.title("🔬 Outlet-Level XAI Explanation")
 st.write("Understand why each outlet received its predicted potential and recommended actions")
