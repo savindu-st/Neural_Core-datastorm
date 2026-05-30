@@ -1,546 +1,286 @@
 """
-Bronze → Silver data cleaning pipeline.
+Bronze -> Silver Data Cleaning & Anomaly Correction Pipeline.
 
-Reads raw CSV files from the Bronze lakehouse layer, validates and cleans
-each dataset, saves rejected records for auditing, and writes cleaned
-Parquet files to the Silver layer.
-
-Usage::
-
-    python -m src.data_pipeline.clean
+Reads standardized loaded CSV files from the Silver drop-zone, runs data quality 
+validation routines via dq_checks, quarantines bad records systematically via 
+RejectedStore, applies automated coordinate swap-back correction, calculates 
+Coordinate Quality Scores, and outputs cleaned Parquet and CSV files.
 """
 
 import pandas as pd
+import numpy as np
 import logging
 from pathlib import Path
-from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
-
-import src.utils.dq_engine as dq
 from src.utils.config import load_config
+import src.data_pipeline.dq_checks as dq_checks
+from src.data_pipeline.rejected_store import RejectedStore
 
 logger = logging.getLogger(__name__)
 
-__all__ = [
-    "clean_outlet_master",
-    "clean_outlet_coordinates",
-    "clean_holiday_list",
-    "clean_distributor_seasonality",
-    "clean_transactions",
-    "CleaningResult",
-]
-
-
-# ---------------------------------------------------------------------------
-# Column name constants — single source of truth
-# ---------------------------------------------------------------------------
-class Columns:
-    """Centralized column names to avoid magic strings throughout the pipeline."""
-
-    OUTLET_SIZE = "Outlet_Size"
-    OUTLET_TYPE = "Outlet_Type"
-    LATITUDE = "Latitude"
-    LONGITUDE = "Longitude"
-    VOLUME_LITERS = "Volume_Liters"
-    TOTAL_BILL_VALUE = "Total_Bill_Value"
-    DATE = "Date"
-    YEAR = "Year"
-    MONTH = "Month"
-    SEASONALITY_INDEX = "Seasonality_Index"
-
-
-class GeoBounds:
-    """Geographic boundaries for Sri Lanka coordinate validation."""
-
-    SRI_LANKA_LAT_MIN = 5.5
-    SRI_LANKA_LAT_MAX = 10.0
-    SRI_LANKA_LON_MIN = 79.0
-    SRI_LANKA_LON_MAX = 82.0
-
-
-# Known typo corrections for Outlet_Type (must be in Title Case
-# to match the output of normalize_column).
-_OUTLET_TYPE_TYPOS: dict[str, str] = {
-    "Grocry": "Grocery",
-    "Bakry": "Bakery",
-    "Smmt": "SMMT",  # Restore acronym mangled by .str.title()
-}
-
-
-
-# ---------------------------------------------------------------------------
-# Result dataclass — returned by every cleaning function
-# ---------------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class CleaningResult:
-    """Summary of a single dataset's cleaning pass.
-
-    Attributes:
-        dataset:       Human-readable dataset name.
-        rows_in:       Total rows read from Bronze.
-        rows_out:      Total rows written to Silver.
-        rows_flagged:  Rows flagged as problematic (saved to rejected/).
-        rows_dropped:  Rows actually removed from Silver output.
-        output_path:   Absolute path to the output Parquet file.
-    """
-
-    dataset: str
-    rows_in: int
-    rows_out: int
-    rows_flagged: int
-    rows_dropped: int
-    output_path: Path
-
-
-# ---------------------------------------------------------------------------
-# Helper utilities
-# ---------------------------------------------------------------------------
-def _read_bronze_csv(bronze_path: Path, filename: str, **kwargs) -> pd.DataFrame:
-    """Read a CSV from the Bronze layer with existence validation.
-
-    Raises:
-        FileNotFoundError: If the source file does not exist.
-    """
-    source = bronze_path / filename
-    if not source.exists():
-        raise FileNotFoundError(f"Bronze file not found: {source}")
-    return pd.read_csv(source, **kwargs)
-
-
-def _require_columns(df: pd.DataFrame, columns: list[str], dataset: str) -> None:
-    """Validate that all expected columns are present in the DataFrame.
-
-    Raises:
-        ValueError: If the DataFrame has zero rows.
-        KeyError: If any required column is missing.
-    """
-    if len(df) == 0:
-        raise ValueError(f"[{dataset}] DataFrame is empty — 0 rows loaded from Bronze")
-    missing = [c for c in columns if c not in df.columns]
-    if missing:
-        raise KeyError(
-            f"[{dataset}] Missing required columns: {', '.join(missing)}"
-        )
-
-
-def normalize_column(df: pd.DataFrame, col: str) -> None:
-    """Strip whitespace and title-case a string column in-place.
-
-    Modifies *df* in-place; returns nothing.
-    """
-    if col not in df.columns:
-        return
-
-    # Only apply string normalization to object or string dtypes
-    # to avoid converting numeric data or mangling native NaNs.
-    if pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
-        df[col] = df[col].str.strip().str.title()
-
-
-def save_rejected(
-    df: pd.DataFrame,
-    mask: pd.Series,
-    rejected_path: Path,
-    filename: str,
-    reason: str = "Unspecified",
-) -> int:
-    """Save rejected/bad rows to the rejected folder and return the count.
-
-    Files are timestamped so successive pipeline runs never overwrite
-    previous audit records. Includes a 'rejection_reason' column as per
-    competition requirements.
-    """
-    rejected_count = int(mask.sum())
-    if rejected_count > 0:
-        rejected_df = df[mask].copy()
-        rejected_df["rejection_reason"] = reason
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_file = rejected_path / f"{filename}_rejected_{ts}.csv"
-        rejected_df.to_csv(out_file, index=False)
-        logger.warning(
-            "Saved %d bad records to %s (Reason: %s)", rejected_count, out_file, reason
-        )
-    return rejected_count
-
-
-def _atomic_parquet_write(df: pd.DataFrame, output_file: Path) -> None:
-    """Write Parquet atomically: write to .tmp, then rename.
-
-    Prevents partial corruption if the pipeline crashes mid-write.
-    """
-    tmp_file = output_file.with_suffix(".parquet.tmp")
-    df.to_parquet(tmp_file, index=False)
-    tmp_file.replace(output_file)
-
-
-def _cleanup_old_rejected(rejected_path: Path, keep_last: int = 5) -> None:
-    """Keep only the N most recent rejected files per dataset prefix."""
-    prefixes = {
-        f.name.rsplit("_rejected_", 1)[0]
-        for f in rejected_path.glob("*_rejected_*.csv")
-    }
-    for prefix in prefixes:
-        files = sorted(rejected_path.glob(f"{prefix}_rejected_*.csv"), reverse=True)
-        for old in files[keep_last:]:
-            old.unlink()
-            logger.info("Cleaned up old rejected file: %s", old.name)
-
-
-# ---------------------------------------------------------------------------
-# Dataset-specific cleaners
-# ---------------------------------------------------------------------------
-def clean_outlet_master(
-    bronze_path: Path, silver_path: Path, rejected_path: Path
-) -> CleaningResult:
-    """Clean the outlet_master dataset.
-
-    - Rejects rows with missing Outlet_Size (saved for audit).
-    - Normalises string columns *first*, then imputes missing Outlet_Size
-      as ``'Unknown'`` so Silver retains full row volume.
-    - Fixes known typos in Outlet_Type.
-    """
-    logger.info("Cleaning outlet_master...")
-    df = _read_bronze_csv(bronze_path, "outlet_master.csv")
-    _require_columns(df, [Columns.OUTLET_SIZE], "outlet_master")
-    rows_in = len(df)
-
-    # Use reusable DQ Engine for Null checks
-    bad_mask = dq.validate_nulls(df, [Columns.OUTLET_SIZE])
-    rows_flagged = save_rejected(
-        df, bad_mask, rejected_path, "outlet_master", reason="Mandatory Field Null (Outlet_Size)"
-    )
-
-    # Normalise existing data first, then fill gaps
-    normalize_column(df, Columns.OUTLET_TYPE)
-    normalize_column(df, Columns.OUTLET_SIZE)
-    df[Columns.OUTLET_SIZE] = df[Columns.OUTLET_SIZE].fillna("Unknown")
-
-    # Fix known typos
-    if Columns.OUTLET_TYPE in df.columns:
-        df[Columns.OUTLET_TYPE] = df[Columns.OUTLET_TYPE].replace(
-            _OUTLET_TYPE_TYPOS
-        )
-
-    output_file = silver_path / "outlet_master.parquet"
-    _atomic_parquet_write(df, output_file)
-    logger.info("Saved cleaned outlet_master to %s (Rows: %d)", output_file, len(df))
-
-    return CleaningResult(
-        dataset="outlet_master",
-        rows_in=rows_in,
-        rows_out=len(df),
-        rows_flagged=rows_flagged,
-        rows_dropped=0,
-        output_path=output_file,
-    )
-
-
-def clean_outlet_coordinates(
-    bronze_path: Path, silver_path: Path, rejected_path: Path
-) -> CleaningResult:
-    """Clean the outlet_coordinates dataset.
-
-    - Coerces lat/lon to numeric.
-    - Flags unparseable and out-of-Sri-Lanka-bounds rows as rejected.
-    - Nulls out bad coordinate values in Silver so downstream models
-      can decide how to handle missingness.
-    """
-    logger.info("Cleaning outlet_coordinates...")
-    df = _read_bronze_csv(bronze_path, "outlet_coordinates.csv")
-    _require_columns(df, [Columns.LATITUDE, Columns.LONGITUDE], "outlet_coordinates")
-    rows_in = len(df)
-
-    # Use reusable DQ Engine for Range and Type checks
-    unparseable = dq.validate_types(df, Columns.LATITUDE, "numeric") | dq.validate_types(df, Columns.LONGITUDE, "numeric")
-    
-    out_of_bounds = (
-        dq.validate_range(df, Columns.LATITUDE, GeoBounds.SRI_LANKA_LAT_MIN, GeoBounds.SRI_LANKA_LAT_MAX)
-        | dq.validate_range(df, Columns.LONGITUDE, GeoBounds.SRI_LANKA_LON_MIN, GeoBounds.SRI_LANKA_LON_MAX)
-    )
-    
-    bad_mask = unparseable | out_of_bounds
-    rows_flagged = save_rejected(df, bad_mask, rejected_path, "outlet_coordinates", reason="Geospatial Out-of-Bounds/Format")
-
-    # Null out bad values so Silver is genuinely clean
-    df[Columns.LATITUDE] = pd.to_numeric(df[Columns.LATITUDE], errors="coerce").where(~bad_mask)
-    df[Columns.LONGITUDE] = pd.to_numeric(df[Columns.LONGITUDE], errors="coerce").where(~bad_mask)
-
-    output_file = silver_path / "outlet_coordinates.parquet"
-    _atomic_parquet_write(df, output_file)
-    logger.info(
-        "Saved cleaned outlet_coordinates to %s (Rows: %d)", output_file, len(df)
-    )
-
-    return CleaningResult(
-        dataset="outlet_coordinates",
-        rows_in=rows_in,
-        rows_out=len(df),
-        rows_flagged=rows_flagged,
-        rows_dropped=0,  # Flagged rows are nulled, not removed
-        output_path=output_file,
-    )
-
-
-def clean_holiday_list(
-    bronze_path: Path, silver_path: Path, rejected_path: Path
-) -> CleaningResult:
-    """Clean the holiday_list dataset.
-
-    - Attempts ISO8601 parse first for speed; falls back to pandas
-      inference if the majority of rows fail to parse.
-    - Rejects rows with unparseable dates.
-    - Derives Year and Month helper columns.
-    """
-    logger.info("Cleaning holiday_list...")
-    df = _read_bronze_csv(bronze_path, "holiday_list.csv")
-    _require_columns(df, [Columns.DATE], "holiday_list")
-    rows_in = len(df)
-
-    # Try ISO8601 first (faster), fall back to inference if >50% fail
-    parsed_dates = pd.to_datetime(
-        df[Columns.DATE], format="ISO8601", errors="coerce"
-    )
-    if parsed_dates.isna().mean() > 0.5:
-        logger.warning(
-            "ISO8601 parse rejected >50%% of dates — falling back to inferred format"
-        )
-        parsed_dates = pd.to_datetime(df[Columns.DATE], errors="coerce")
-
-    # Identify bad records (unparseable dates)
-    bad_mask = parsed_dates.isna()
-    rows_flagged = save_rejected(df, bad_mask, rejected_path, "holiday_list")
-
-    # Remove rows with unparseable dates from Silver — NaT values
-    # would produce NaN Year/Month and break downstream joins.
-    rows_dropped = int(bad_mask.sum())
-    df = df[~bad_mask].copy()
-    parsed_dates = parsed_dates[~bad_mask]
-
-    df[Columns.DATE] = parsed_dates
-    df[Columns.YEAR] = df[Columns.DATE].dt.year
-    df[Columns.MONTH] = df[Columns.DATE].dt.month
-
-    output_file = silver_path / "holiday_list.parquet"
-    _atomic_parquet_write(df, output_file)
-    logger.info("Saved cleaned holiday_list to %s (Rows: %d)", output_file, len(df))
-
-    return CleaningResult(
-        dataset="holiday_list",
-        rows_in=rows_in,
-        rows_out=len(df),
-        rows_flagged=rows_flagged,
-        rows_dropped=rows_dropped,
-        output_path=output_file,
-    )
-
-
-def clean_distributor_seasonality(
-    bronze_path: Path, silver_path: Path, rejected_path: Path
-) -> CleaningResult:
-    """Clean the distributor_seasonality_details dataset.
-
-    - Rejects rows with any null values.
-    - Standardises Seasonality_Index only if it is a string column.
-    """
-    logger.info("Cleaning distributor_seasonality_details...")
-    df = _read_bronze_csv(bronze_path, "distributor_seasonality_details.csv")
-    _require_columns(df, [Columns.SEASONALITY_INDEX], "distributor_seasonality")
-    rows_in = len(df)
-
-    bad_mask = df.isna().any(axis=1)
-    rows_flagged = save_rejected(
-        df, bad_mask, rejected_path, "distributor_seasonality"
-    )
-
-    # Drop rows with any null from Silver output
-    rows_dropped = int(bad_mask.sum())
-    df = df[~bad_mask]
-
-    # Standardize string categories only when the column is string-typed
-    if Columns.SEASONALITY_INDEX in df.columns:
-        if pd.api.types.is_string_dtype(df[Columns.SEASONALITY_INDEX]):
-            normalize_column(df, Columns.SEASONALITY_INDEX)
-
-    output_file = silver_path / "distributor_seasonality_details.parquet"
-    _atomic_parquet_write(df, output_file)
-    logger.info(
-        "Saved cleaned distributor_seasonality_details to %s (Rows: %d)",
-        output_file,
-        len(df),
-    )
-
-    return CleaningResult(
-        dataset="distributor_seasonality_details",
-        rows_in=rows_in,
-        rows_out=len(df),
-        rows_flagged=rows_flagged,
-        rows_dropped=rows_dropped,
-        output_path=output_file,
-    )
-
-
-def clean_transactions(
-    bronze_path: Path, silver_path: Path, rejected_path: Path
-) -> CleaningResult:
-    """Clean the transactions_history_final dataset.
-
-    - Flags non-positive Volume_Liters / negative Total_Bill_Value.
-    - Flags out-of-range Year/Month values.
-    - Flags exact duplicate rows.
-    - Removes all flagged rows from Silver output.
-    """
-    logger.info("Cleaning transactions_history_final (this may take a minute)...")
-
-    # Use PyArrow engine for a massive speed boost and lower memory footprint.
-    # It naturally handles type inference much better than the C engine.
-    df = _read_bronze_csv(
-        bronze_path, "transactions_history_final.csv", engine="pyarrow", dtype_backend="pyarrow"
-    )
-    rows_in = len(df)
-    logger.info("Loaded %d rows from transactions file.", rows_in)
-
-    # 1. Use reusable DQ Engine for range and duplicate checks
-    neg_vol = dq.validate_range(df, Columns.VOLUME_LITERS, 0.0001, 1000000) # Non-positive
-    neg_val = dq.validate_range(df, Columns.TOTAL_BILL_VALUE, 0.0, 10000000)
-    
-    invalid_period = dq.validate_range(df, Columns.YEAR, 2023, 2026) | dq.validate_range(df, Columns.MONTH, 1, 12)
-
-    # 2. Statistical Outlier Detection (Causal Signal Separation)
-    outlier_mask = pd.Series(False, index=df.index)
-    if Columns.VOLUME_LITERS in df.columns:
-        Q3 = df[Columns.VOLUME_LITERS].quantile(0.75)
-        IQR = Q3 - df[Columns.VOLUME_LITERS].quantile(0.25)
-        outlier_mask = df[Columns.VOLUME_LITERS] > (Q3 + 10 * IQR)
-
-    is_duplicate = dq.validate_duplicates(df, subset=list(df.columns))
-
-    # Sequential flagging to document specific reasons
-    rows_flagged = 0
-    rows_flagged += save_rejected(df, neg_vol, rejected_path, "transactions_history", "Value Range Failure (Volume)")
-    rows_flagged += save_rejected(df, neg_val, rejected_path, "transactions_history", "Value Range Failure (Bill)")
-    rows_flagged += save_rejected(df, invalid_period, rejected_path, "transactions_history", "Invalid Date range")
-    rows_flagged += save_rejected(df, outlier_mask, rejected_path, "transactions_history", "System Artifact (Statistical Outlier)")
-    rows_flagged += save_rejected(df, is_duplicate, rejected_path, "transactions_history", "Duplicate Record")
-
-    # Final Silver mask
-    bad_mask = neg_vol | neg_val | invalid_period | outlier_mask | is_duplicate
-
-    # 3. Referential Integrity Check (Required by Section 4.2)
-    master_path = silver_path / "outlet_master.parquet"
-    if master_path.exists():
-        master_df = pd.read_parquet(master_path)
-        orphan_mask = dq.validate_referential_integrity(df, master_df, "Outlet_ID")
-        rows_flagged += save_rejected(df, orphan_mask, rejected_path, "transactions_history", "Referential Integrity Failure")
-        bad_mask = bad_mask | orphan_mask
-
-    # Remove flagged rows
-    rows_dropped = int(bad_mask.sum())
-    df = df[~bad_mask]
-
-    output_file = silver_path / "transactions_history.parquet"
-    _atomic_parquet_write(df, output_file)
-    logger.info("Saved cleaned transactions to %s (Rows: %d)", output_file, len(df))
-
-    return CleaningResult(
-        dataset="transactions_history",
-        rows_in=rows_in,
-        rows_out=len(df),
-        rows_flagged=rows_flagged,
-        rows_dropped=rows_dropped,
-        output_path=output_file,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Type alias for pipeline steps
-# ---------------------------------------------------------------------------
-CleanerFn = Callable[[Path, Path, Path], CleaningResult]
-
-
-# ---------------------------------------------------------------------------
-# Pipeline orchestration
-# ---------------------------------------------------------------------------
-def main() -> None:
-    """Run the full Bronze → Silver cleaning pipeline."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    )
-
-    # Load paths from centralised config
-    config = load_config()
-    bronze_path = Path(config["data"]["bronze_path"])
-    silver_path = Path(config["data"]["silver_path"])
-    rejected_path = Path(config["data"].get("rejected_path", "data/rejected"))
-
-    # Ensure output directories exist
-    silver_path.mkdir(parents=True, exist_ok=True)
-    rejected_path.mkdir(parents=True, exist_ok=True)
-
-    # Ordered cleaning steps
-    steps: list[tuple[str, CleanerFn]] = [
-        ("outlet_master", clean_outlet_master),
-        ("outlet_coordinates", clean_outlet_coordinates),
-        ("holiday_list", clean_holiday_list),
-        ("distributor_seasonality", clean_distributor_seasonality),
-        ("transactions", clean_transactions),
-    ]
-
-    results: list[CleaningResult] = []
-    failed: list[str] = []
-
-    for name, func in steps:
-        try:
-            result = func(bronze_path, silver_path, rejected_path)
-            results.append(result)
-        except Exception as e:
-            logger.error("Failed cleaning %s: %s", name, e, exc_info=True)
-            failed.append(name)
-
-    # ---- Summary report ----
-    if results:
-        logger.info("=" * 72)
-        logger.info("CLEANING SUMMARY")
-        logger.info("-" * 72)
-        logger.info(
-            "  %-35s %8s %8s %8s %8s %7s",
-            "DATASET", "IN", "OUT", "FLAGGED", "DROPPED", "FLAG%",
-        )
-        logger.info("-" * 72)
-        for r in results:
-            flag_pct = (r.rows_flagged / r.rows_in * 100) if r.rows_in > 0 else 0.0
-            logger.info(
-                "  %-35s %8d %8d %8d %8d %6.1f%%",
-                r.dataset, r.rows_in, r.rows_out, r.rows_flagged, r.rows_dropped, flag_pct,
-            )
-            if flag_pct > 10:
-                logger.warning(
-                    "  ⚠️  %s: %.1f%% rows flagged — investigate data source!",
-                    r.dataset, flag_pct,
-                )
-        logger.info("-" * 72)
-        total_in = sum(r.rows_in for r in results)
-        total_out = sum(r.rows_out for r in results)
-        total_flagged = sum(r.rows_flagged for r in results)
-        total_dropped = sum(r.rows_dropped for r in results)
-        total_flag_pct = (total_flagged / total_in * 100) if total_in > 0 else 0.0
-        logger.info(
-            "  %-35s %8d %8d %8d %8d %6.1f%%",
-            "TOTAL", total_in, total_out, total_flagged, total_dropped, total_flag_pct,
-        )
-        logger.info("=" * 72)
-
-    if failed:
-        raise RuntimeError(
-            f"Bronze → Silver cleaning failed for: {', '.join(failed)}"
-        )
-
-    # Clean up old rejected files (keep last 5 per dataset)
-    _cleanup_old_rejected(rejected_path)
-
-    logger.info("All Bronze → Silver data cleaning completed successfully.")
-
+# Geographic constants
+SRI_LANKA_LAT_MIN, SRI_LANKA_LAT_MAX = 5.5, 10.0
+SRI_LANKA_LON_MIN, SRI_LANKA_LON_MAX = 79.0, 82.0
+
+class DataCleaner:
+    def __init__(self):
+        self.config = load_config()
+        self.silver_path = Path(self.config["data"]["silver_path"])
+        self.rejected_path = Path(self.config["data"].get("rejected_path", "data/rejected"))
+        self.evidence_path = Path("outputs/evidence")
+        
+        self.silver_path.mkdir(parents=True, exist_ok=True)
+        self.rejected_path.mkdir(parents=True, exist_ok=True)
+        self.evidence_path.mkdir(parents=True, exist_ok=True)
+        
+        self.rejected_store = RejectedStore(self.rejected_path)
+        
+        # Ingestion metrics list for evidence summary CSV
+        self.dq_results_summary = []
+
+    def clean_outlets(self) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Cleans both outlet master and outlet coordinates.
+        Applies coordinate swap-back corrections, computes coordinate quality scores,
+        quarantines invalid records, and merges them.
+        """
+        logger.info("Cleaning outlet datasets...")
+        
+        # Load raw loaded silver files
+        master_file = self.silver_path / "raw_outlet_master_loaded.csv"
+        coords_file = self.silver_path / "raw_outlet_coordinates_loaded.csv"
+        
+        if not master_file.exists() or not coords_file.exists():
+            raise FileNotFoundError("Missing raw loaded outlet datasets in Silver layer.")
+            
+        df_master = pd.read_csv(master_file)
+        df_coords = pd.read_csv(coords_file)
+        
+        logger.info(f"Loaded {len(df_master)} master rows and {len(df_coords)} coordinate rows.")
+        
+        # --- 1. Clean Coordinates ---
+        # Find invalid and swapped coordinates
+        bad_coords_mask, swapped_mask = dq_checks.run_coordinate_checks(df_coords)
+        
+        # Record metrics
+        swapped_count = int(swapped_mask.sum())
+        invalid_count = int(bad_coords_mask.sum())
+        logger.info(f"Geospatial Audit: {swapped_count} swapped coordinates detected, {invalid_count} invalid coordinates detected.")
+        
+        # Store bad coordinate rows in rejected coordinates
+        self.rejected_store.store_rejected(df_coords, bad_coords_mask, "outlet_coordinates", "Geospatial Out-of-Bounds/Format")
+        
+        # Initialize coordinate quality score
+        coord_quality = pd.Series(0.0, index=df_coords.index)
+        
+        # Swapped Correction (Wow Factor)
+        if swapped_count > 0:
+            logger.info("Applying automated coordinate swap-back correction...")
+            # Perform vectorized swap
+            lats = df_coords.loc[swapped_mask, "Latitude"].copy()
+            lons = df_coords.loc[swapped_mask, "Longitude"].copy()
+            df_coords.loc[swapped_mask, "Latitude"] = lons
+            df_coords.loc[swapped_mask, "Longitude"] = lats
+            coord_quality.loc[swapped_mask] = 0.5
+            
+        # Clean standard coordinates
+        clean_mask = ~bad_coords_mask & ~swapped_mask
+        coord_quality.loc[clean_mask] = 1.0
+        
+        # Add Coordinate Quality Score to coordinates dataframe
+        df_coords["coordinate_quality_score"] = coord_quality
+        
+        # Null out bad coordinates so they don't break spatial indexes
+        df_coords.loc[bad_coords_mask, "Latitude"] = np.nan
+        df_coords.loc[bad_coords_mask, "Longitude"] = np.nan
+        
+        # Keep clean coordinates in silver coordinates output
+        df_coords_cleaned = df_coords.copy()
+        
+        # Save coordinates Parquet
+        coord_parquet = self.silver_path / "outlet_coordinates.parquet"
+        df_coords_cleaned.to_parquet(coord_parquet, index=False)
+        
+        self.dq_results_summary.append({
+            "dataset": "outlet_coordinates",
+            "rows_in": len(df_coords),
+            "rows_out": len(df_coords_cleaned),
+            "rows_flagged": invalid_count,
+            "rows_dropped": 0,
+            "percentage_flagged": (invalid_count / len(df_coords) * 100) if len(df_coords) > 0 else 0
+        })
+        
+        # --- 2. Clean Outlet Master ---
+        bad_master_mask = dq_checks.run_outlet_master_checks(df_master)
+        master_dropped = int(bad_master_mask.sum())
+        
+        # Store bad master records
+        self.rejected_store.store_rejected(df_master, bad_master_mask, "outlet_master", "Mandatory Field Null (Outlet_Size)")
+        
+        # Filter clean master records
+        df_master_cleaned = df_master[~bad_master_mask].copy()
+        
+        # Standardize strings
+        df_master_cleaned["Outlet_Size"] = df_master_cleaned["Outlet_Size"].str.strip().str.title()
+        df_master_cleaned["Outlet_Type"] = df_master_cleaned["Outlet_Type"].str.strip().str.title()
+        
+        # Typos correction
+        typo_map = {"Grocry": "Grocery", "Bakry": "Bakery", "Smmt": "SMMT"}
+        df_master_cleaned["Outlet_Type"] = df_master_cleaned["Outlet_Type"].replace(typo_map)
+        df_master_cleaned["Outlet_Size"] = df_master_cleaned["Outlet_Size"].fillna("Unknown")
+        
+        # Join Master with Coordinates
+        df_master_merged = df_master_cleaned.merge(df_coords_cleaned, on="Outlet_ID", how="left")
+        
+        # Save Parquet and clean CSV for Member 1 outputs
+        master_parquet = self.silver_path / "outlet_master.parquet"
+        df_master_merged.to_parquet(master_parquet, index=False)
+        
+        master_csv = self.silver_path / "clean_outlet_master.csv"
+        df_master_merged.to_csv(master_csv, index=False)
+        
+        self.dq_results_summary.append({
+            "dataset": "outlet_master",
+            "rows_in": len(df_master),
+            "rows_out": len(df_master_merged),
+            "rows_flagged": master_dropped,
+            "rows_dropped": master_dropped,
+            "percentage_flagged": (master_dropped / len(df_master) * 100) if len(df_master) > 0 else 0
+        })
+        
+        logger.info(f"Saved merged outlet master to Parquet and CSV. Quality distribution: {coord_quality.value_counts().to_dict()}")
+        
+        return df_master_merged, df_coords_cleaned
+
+    def clean_transactions(self, df_master_cleaned: pd.DataFrame):
+        """Cleans transactions_history dataset, enforces referential integrity, and writes outputs."""
+        logger.info("Cleaning transactions dataset...")
+        
+        tx_file = self.silver_path / "raw_transactions_loaded.csv"
+        if not tx_file.exists():
+            raise FileNotFoundError("Missing raw loaded transactions dataset in Silver layer.")
+            
+        # Large file loaded cleanly with pyarrow
+        df = pd.read_csv(tx_file)
+        
+        # Run detailed checks
+        bad_mask, flags = dq_checks.run_transaction_checks(df, df_master_cleaned)
+        
+        # Store rejections systematically by reason
+        for flag_name, mask in flags.items():
+            count = int(mask.sum())
+            if count > 0:
+                self.rejected_store.store_rejected(df, mask, "transactions", f"Transaction Validation: {flag_name}")
+                
+        dropped_count = int(bad_mask.sum())
+        logger.info(f"Transactions Audit: Flags mapped. Dropping {dropped_count} anomalous rows.")
+        
+        # Filter clean records
+        df_cleaned = df[~bad_mask].copy()
+        
+        # Save Parquet & CSV for Member 1 outputs
+        tx_parquet = self.silver_path / "transactions_history.parquet"
+        df_cleaned.to_parquet(tx_parquet, index=False)
+        
+        tx_csv = self.silver_path / "clean_transactions.csv"
+        df_cleaned.to_csv(tx_csv, index=False)
+        
+        self.dq_results_summary.append({
+            "dataset": "transactions_history",
+            "rows_in": len(df),
+            "rows_out": len(df_cleaned),
+            "rows_flagged": dropped_count,
+            "rows_dropped": dropped_count,
+            "percentage_flagged": (dropped_count / len(df) * 100) if len(df) > 0 else 0
+        })
+        
+        logger.info(f"Saved cleaned transactions to Parquet and CSV ({len(df_cleaned)} rows out).")
+
+    def clean_holidays(self):
+        """Cleans holiday list dataset."""
+        logger.info("Cleaning holiday list...")
+        holiday_file = self.silver_path / "raw_holidays_loaded.csv"
+        if not holiday_file.exists():
+            return
+            
+        df = pd.read_csv(holiday_file)
+        bad_mask = dq_checks.run_holiday_checks(df)
+        dropped = int(bad_mask.sum())
+        
+        if dropped > 0:
+            self.rejected_store.store_rejected(df, bad_mask, "holiday_list", "Holiday Date Casing/Format Error")
+            
+        df_cleaned = df[~bad_mask].copy()
+        df_cleaned["Date"] = pd.to_datetime(df_cleaned["Date"], errors='coerce')
+        df_cleaned["Year"] = df_cleaned["Date"].dt.year
+        df_cleaned["Month"] = df_cleaned["Date"].dt.month
+        
+        output_file = self.silver_path / "holiday_list.parquet"
+        df_cleaned.to_parquet(output_file, index=False)
+        
+        self.dq_results_summary.append({
+            "dataset": "holiday_list",
+            "rows_in": len(df),
+            "rows_out": len(df_cleaned),
+            "rows_flagged": dropped,
+            "rows_dropped": dropped,
+            "percentage_flagged": (dropped / len(df) * 100) if len(df) > 0 else 0
+        })
+
+    def clean_seasonality(self):
+        """Cleans distributor seasonality dataset."""
+        logger.info("Cleaning seasonality details...")
+        season_file = self.silver_path / "raw_seasonality_loaded.csv"
+        if not season_file.exists():
+            return
+            
+        df = pd.read_csv(season_file)
+        bad_mask = dq_checks.run_seasonality_checks(df)
+        dropped = int(bad_mask.sum())
+        
+        if dropped > 0:
+            self.rejected_store.store_rejected(df, bad_mask, "distributor_seasonality", "Seasonality Index Null/Range Error")
+            
+        df_cleaned = df[~bad_mask].copy()
+        
+        output_file = self.silver_path / "distributor_seasonality_details.parquet"
+        df_cleaned.to_parquet(output_file, index=False)
+        
+        self.dq_results_summary.append({
+            "dataset": "distributor_seasonality_details",
+            "rows_in": len(df),
+            "rows_out": len(df_cleaned),
+            "rows_flagged": dropped,
+            "rows_dropped": dropped,
+            "percentage_flagged": (dropped / len(df) * 100) if len(df) > 0 else 0
+        })
+
+    def run_pipeline(self):
+        """Runs the entire Bronze -> Silver cleaning pipeline orchestration."""
+        logger.info("Starting Bronze -> Silver Cleaning Pipeline Run...")
+        
+        # Clear previous rejections
+        self.rejected_store.clear_store()
+        
+        # 1. Outlets & Geospatial (Coordinates + Master)
+        df_master_cleaned, df_coords_cleaned = self.clean_outlets()
+        
+        # 2. Seasonality & Holidays
+        self.clean_seasonality()
+        self.clean_holidays()
+        
+        # 3. Transactions (dependant on Master for referential integrity)
+        self.clean_transactions(df_master_cleaned)
+        
+        # 4. Save centralized evidence report
+        dq_checks.save_evidence_summary(self.dq_results_summary, self.evidence_path / "data_quality_summary.csv")
+        
+        logger.info("Bronze -> Silver Cleaning Pipeline Run finished successfully!")
+
+def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    cleaner = DataCleaner()
+    cleaner.run_pipeline()
 
 if __name__ == "__main__":
     main()

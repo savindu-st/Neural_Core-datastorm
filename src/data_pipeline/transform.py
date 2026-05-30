@@ -45,15 +45,24 @@ def merge_silver_to_gold():
     df = pd.read_parquet(tx_file)
     logger.info(f"Base transactions loaded: {len(df)} rows")
     
-    # 2. Join Outlet Master
+    # 2. Join Outlet Master (which already includes Coordinates)
     outlets = pd.read_parquet(master_file)
     df = df.merge(outlets, on="Outlet_ID", how="left")
-    logger.info(f"Merged with Outlet Master. Current rows: {len(df)}")
+    logger.info(f"Merged with Outlet Master (including Coordinates). Current rows: {len(df)}")
     
-    # 3. Join Coordinates
-    coords = pd.read_parquet(coord_file)
-    df = df.merge(coords, on="Outlet_ID", how="left")
-    logger.info(f"Merged with Coordinates. Current rows: {len(df)}")
+    # 3b. Join Distance-Decay Features
+    decay_file = gold_path / "distance_decay_features.csv"
+    if decay_file.exists():
+        decay_features = pd.read_csv(decay_file)
+        df = df.merge(decay_features, on="Outlet_ID", how="left")
+        logger.info(f"Merged with Distance-Decay Features. Current rows: {len(df)}")
+        
+    # 3c. Join Competitor Catchment Density Features
+    comp_file = gold_path / "competitor_density_features.csv"
+    if comp_file.exists():
+        comp_features = pd.read_csv(comp_file)
+        df = df.merge(comp_features, on="Outlet_ID", how="left")
+        logger.info(f"Merged with Competitor Catchment Features. Current rows: {len(df)}")
     
     # 4. Optional: Join Seasonality if available
     season_file = silver_path / "distributor_seasonality_details.parquet"

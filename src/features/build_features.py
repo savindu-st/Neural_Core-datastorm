@@ -127,31 +127,27 @@ def build_features():
         logger.warning("Seasonality_Index missing from gold dataset.")
         outlet_features['Seasonality_Index'] = 1.0
 
-    # 5. POI Score (External Data from Ryan's scraper)
-    poi_path = gold_path / "poi_data.csv"
-    if poi_path.exists():
-        logger.info("Merging POI scores...")
-        poi_data = pd.read_csv(poi_path)
+    # 5. POI Score & Competitor Density (Advanced Spatial Features)
+    decay_path = gold_path / "distance_decay_features.csv"
+    comp_path = gold_path / "competitor_density_features.csv"
+    
+    if decay_path.exists() and comp_path.exists():
+        logger.info("Merging advanced POI and competitor density features...")
+        df_decay = pd.read_csv(decay_path)
+        df_comp = pd.read_csv(comp_path)
         
-        # Calculate a weighted POI score if counts exist
-        count_cols = [c for c in poi_data.columns if 'count' in c]
-        if count_cols:
-            # Simple weighted score: schools and hospitals might be more important
-            weights = {
-                'school_count': 2.0,
-                'hospital_count': 2.0,
-                'bus_stop_count': 1.5,
-                'restaurant_count': 1.0,
-                'fuel_count': 1.0,
-                'tourism_count': 1.5
-            }
-            poi_data['poi_score'] = sum(poi_data[c] * weights.get(c, 1.0) for c in count_cols)
+        # Map features correctly:
+        # poi_score -> total_poi_decay_score
+        # market_saturation_index -> market_saturation_index
+        df_decay_subset = df_decay[['Outlet_ID', 'total_poi_decay_score']].rename(columns={'total_poi_decay_score': 'poi_score'})
+        df_comp_subset = df_comp[['Outlet_ID', 'market_saturation_index', 'competitor_decay_score']].rename(columns={'competitor_decay_score': 'competitor_density'})
         
-        # 5b. Competition Density (The "Winning" Causal Signal)
-        logger.info("Calculating competitive pressure (Outlet Density)...")
-        # Optimization: Use the 20k Silver Coordinates file directly to save memory!
+        spatial_features = df_decay_subset.merge(df_comp_subset, on='Outlet_ID', how='left')
+        
+        # Calculate competitive pressure (Outlet Density) via KD-Tree on coordinates
         coord_path = Path("data/silver/outlet_coordinates.parquet")
         if coord_path.exists():
+            logger.info("Calculating competitive pressure (Outlet Density)...")
             coords_df = pd.read_parquet(coord_path).dropna(subset=['Latitude', 'Longitude'])
             from scipy.spatial import cKDTree
             tree = cKDTree(coords_df[['Latitude', 'Longitude']].values)
@@ -161,25 +157,17 @@ def build_features():
                 'Outlet_ID': coords_df['Outlet_ID'],
                 'outlet_density': [len(d) - 1 for d in density]
             })
+            spatial_features = spatial_features.merge(density_map, on='Outlet_ID', how='left')
+        else:
+            logger.warning("Silver coordinates missing. Skipping outlet density.")
+            spatial_features['outlet_density'] = 0.0
             
-            # Merge density into poi_data to calculate saturation
-            poi_data = poi_data.merge(density_map, on='Outlet_ID', how='left')
-            poi_data['market_saturation_index'] = poi_data['poi_score'] / (1 + poi_data['outlet_density'].fillna(0))
-        else:
-            logger.warning("Silver coordinates missing. Skipping density features.")
-        
-        if 'Outlet_ID' in poi_data.columns:
-            cols_to_merge = ['Outlet_ID', 'poi_score', 'outlet_density', 'market_saturation_index']
-            outlet_features = outlet_features.merge(
-                poi_data[[c for c in cols_to_merge if c in poi_data.columns]], 
-                on='Outlet_ID', 
-                how='left'
-            )
-        else:
-            logger.warning("POI data found but missing Outlet_ID column.")
+        outlet_features = outlet_features.merge(spatial_features, on='Outlet_ID', how='left')
     else:
-        logger.info("POI data not found. Skipping POI features.")
-        outlet_features['poi_score'] = 0.0 # Placeholder
+        logger.info("Advanced spatial features not found. Skipping spatial features.")
+        outlet_features['poi_score'] = 0.0
+        outlet_features['outlet_density'] = 0.0
+        outlet_features['market_saturation_index'] = 0.0
 
     # 6. Censoring Indicator
     # A crucial part for latent demand: Is the observed max limited by supply?

@@ -1,0 +1,6 @@
+dataset,rows_in,rows_out,rows_flagged,rows_dropped,percentage_flagged
+outlet_coordinates,20000,20000,40,0,0.2
+outlet_master,20000,19804,196,196,0.98
+distributor_seasonality_details,360,360,0,0,0.0
+holiday_list,349,349,0,0,0.0
+transactions_history,2376389,2331194,45195,45195,1.9018350951801242
