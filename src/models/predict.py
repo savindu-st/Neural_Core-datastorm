@@ -115,16 +115,39 @@ def generate_predictions():
     # A. Official Submission Format (Only required columns)
     submission = df[['Outlet_ID', 'Maximum_Monthly_Liters']].copy()
     
-    # Competition requirement: teamname_predictions.csv
-    sub_file = output_path / "quadnova_predictions.csv"
-    submission.to_csv(sub_file, index=False)
-    
     # B. Business BI Report (Enhanced version for the report PDF)
     report_cols = [
         'Outlet_ID', 'Maximum_Monthly_Liters', 'confidence_score', 
         'outlet_segment', 'risk_level', 'business_recommendation'
     ]
     bi_report = df[report_cols].copy()
+    
+    # Competition row count safeguard: load raw bronze master to account for the 196 quarantined outlets
+    master_path = Path("data/bronze/outlet_master.csv")
+    if master_path.exists():
+        logger.info("Applying competition row count safeguard (healing missing quarantined outlets)...")
+        master_df = pd.read_csv(master_path, usecols=['Outlet_ID'], dtype=str)
+        
+        # Merge to guarantee 100% coverage
+        submission = master_df.merge(submission, on='Outlet_ID', how='left')
+        bi_report  = master_df.merge(bi_report, on='Outlet_ID', how='left')
+        
+        # Impute missing predictions with overall median
+        median_pred = df['Maximum_Monthly_Liters'].median()
+        submission['Maximum_Monthly_Liters'] = submission['Maximum_Monthly_Liters'].fillna(median_pred)
+        
+        # Impute BI columns for quarantined outlets
+        bi_report['Maximum_Monthly_Liters'] = bi_report['Maximum_Monthly_Liters'].fillna(median_pred)
+        bi_report['confidence_score']        = bi_report['confidence_score'].fillna(0.0)
+        bi_report['outlet_segment']         = bi_report['outlet_segment'].fillna("Dormant / Excluded")
+        bi_report['risk_level']             = bi_report['risk_level'].fillna("High")
+        bi_report['business_recommendation'] = bi_report['business_recommendation'].fillna("Perform In-Person Verification")
+        
+        logger.info(f"Healed output dataframes to complete 20,000 outlets (added 196 missing rows).")
+        
+    sub_file = output_path / "quadnova_predictions.csv"
+    submission.to_csv(sub_file, index=False)
+    
     bi_file = output_path / "business_intelligence_report.csv"
     bi_report.to_csv(bi_file, index=False)
     
