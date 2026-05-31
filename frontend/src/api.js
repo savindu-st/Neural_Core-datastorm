@@ -38,3 +38,13 @@ export const fetchBudget = async () => {
   const response = await axios.get(`${API_BASE}/budget`);
   return response.data;
 };
+
+export const fetchQuality = async () => {
+  const response = await axios.get(`${API_BASE}/quality`);
+  return response.data;
+};
+
+export const simulateBudget = async (totalBudget) => {
+  const response = await axios.get(`${API_BASE}/budget/simulate?total_budget=${totalBudget}`);
+  return response.data;
+};

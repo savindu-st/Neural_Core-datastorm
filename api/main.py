@@ -196,6 +196,63 @@ def get_budget():
         "top_outlets": top_outlets
     }
 
+@app.get("/api/quality")
+def get_quality():
+    """Return real data quality evidence from CSVs."""
+    result = {"datasets": [], "rejections": [], "totals": {"rows_in": 0, "rows_out": 0, "rows_flagged": 0, "rows_dropped": 0}}
+    try:
+        dq = pd.read_csv(PROJECT_ROOT / 'outputs/evidence/data_quality_summary.csv')
+        result["datasets"] = dq.to_dict('records')
+        result["totals"] = {
+            "rows_in": int(dq['rows_in'].sum()),
+            "rows_out": int(dq['rows_out'].sum()),
+            "rows_flagged": int(dq['rows_flagged'].sum()),
+            "rows_dropped": int(dq['rows_dropped'].sum()),
+        }
+    except Exception:
+        pass
+    try:
+        rej = pd.read_csv(PROJECT_ROOT / 'outputs/evidence/rejected_reason_counts.csv')
+        result["rejections"] = rej.to_dict('records')
+    except Exception:
+        pass
+    return result
+
+@app.get("/api/budget/simulate")
+def simulate_budget(total_budget: float = 5000000):
+    """Re-allocate budget proportionally given a new total."""
+    df, _, err = load_data()
+    if err:
+        raise HTTPException(status_code=500, detail=err)
+
+    for col in ['Trade_Spend_Allocation_LKR', 'Expected_Incremental_Liters', 'Risk_Adjusted_ROI']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    if 'Trade_Spend_Allocation_LKR' not in df.columns:
+        raise HTTPException(status_code=400, detail="No allocation data")
+
+    original_total = df['Trade_Spend_Allocation_LKR'].sum()
+    if original_total == 0:
+        raise HTTPException(status_code=400, detail="Original budget is zero")
+
+    scale = total_budget / original_total
+    df['Simulated_Allocation'] = df['Trade_Spend_Allocation_LKR'] * scale
+    if 'Expected_Incremental_Liters' in df.columns:
+        df['Simulated_Incremental'] = df['Expected_Incremental_Liters'] * scale
+
+    funded = df.dropna(subset=['Trade_Spend_Allocation_LKR'])
+    top20 = funded.nlargest(20, 'Simulated_Allocation')
+    cols = [c for c in ['Outlet_ID', 'Simulated_Allocation', 'Simulated_Incremental', 'Distributor_ID'] if c in top20.columns]
+
+    return {
+        "total_budget": total_budget,
+        "total_outlets": int(funded['Trade_Spend_Allocation_LKR'].notna().sum()),
+        "avg_allocation": total_budget / max(len(funded), 1),
+        "expected_incremental": float(funded['Simulated_Incremental'].sum()) if 'Simulated_Incremental' in funded.columns else 0,
+        "top_outlets": top20[cols].replace({np.nan: None}).to_dict('records')
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
