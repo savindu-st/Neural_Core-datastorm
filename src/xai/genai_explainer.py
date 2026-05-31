@@ -11,7 +11,11 @@ from pathlib import Path
 from datetime import datetime
 import os
 import json
-from gemini_client import GeminiClient
+from dotenv import load_dotenv
+from .gemini_client import GeminiClient
+
+# Load environment variables from .env
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +60,8 @@ def initialize_gemini_client():
         return None
     
     try:
-        client = GeminiClient(api_key=api_key, model="gemini-1.5-pro")
+        model = os.environ.get('GEMINI_MODEL', 'gemini-pro')
+        client = GeminiClient(api_key=api_key, model=model)
         logger.info("✅ Gemini client initialized successfully")
         return client
     except Exception as e:
@@ -420,11 +425,11 @@ Fix: Delete .gemini_cache.json and regenerate
 """
     
     Path('reports').mkdir(parents=True, exist_ok=True)
-    with open('reports/genai_log.md', 'w') as f:
+    with open('reports/genai_log.md', 'w', encoding='utf-8') as f:
         f.write(log_content)
     
     logger.info("✅ Saved usage log to reports/genai_log.md")
 
 
 if __name__ == '__main__':
-    enhance_explanations_with_genai()
+    enhance_explanations_with_gemini()

@@ -14,7 +14,7 @@ def load_data():
     """Load prediction and driver data."""
     driver_table = pd.read_csv('data/gold/model_driver_table.csv')
     outlet_segments = pd.read_csv('data/gold/outlet_segments.csv')
-    predictions = pd.read_csv('outputs/predictions/quadnova_budget_allocations.csv')
+    predictions = pd.read_csv('outputs/predictions/quadnova_predictions.csv')
     return driver_table, outlet_segments, predictions
 
 
