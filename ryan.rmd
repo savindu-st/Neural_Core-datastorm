@@ -1,279 +1,182 @@
-Member 3 — XAI + Web App + Business Story
-Main Responsibility
+Member 3 — XAI, Web App & Business Story (current)
 
-Member 3 handles outlet-level explanations, GenAI prompts, Streamlit web app, final technical paper, pitch deck, and demo script.
+Summary
 
-This part supports Business Viability and Explainability and Generative AI Utilization, worth 25% and 15%.
+Member 3 owns the outlet-level explanation stack (rule-based and optional GenAI enhancement), the Streamlit UI/UX, the GenAI transparency/audit log, and business-facing artifacts (technical paper, pitch script). Recent improvements include a modernized Streamlit theme (glassmorphism cards, gradient headers, badges, and a floating feedback button) and safer GenAI integration with offline fallback behavior.
 
-Member 3 Files to Create / Maintain
-1. src/xai/prompt_templates.py
+Core Files to Maintain
 
-Purpose:
-Store reusable GenAI explanation prompts.
+1. `src/xai/prompt_templates.py`
 
-Example prompt template:
+Purpose: store reusable GenAI prompt templates for outlet explanations, budget summaries and segment analysis.
 
-You are a business analyst explaining outlet sales potential to a beverage company executive.
+Notes: keep templates short, structured and include an explicit "Do not hallucinate" guard clause for sensitive claims.
 
-Outlet ID: {Outlet_ID}
-Predicted Potential: {Maximum_Monthly_Liters}
-Current Average Sales: {avg_monthly_liters}
-Potential Gap: {potential_gap}
-Top Positive Drivers: {positive_drivers}
-Top Negative Drivers: {negative_drivers}
-Competitor Level: {competition_level}
-Confidence Score: {confidence_score}
-Recommended Spend: {Trade_Spend_Allocation_LKR}
+2. `src/xai/outlet_reasoning.py`
 
-Write a simple business explanation in 4 sentences:
-1. Why the outlet received this score.
-2. What factors increased the score.
-3. What factors reduced or constrained the score.
-4. What action the sales team should take.
-2. src/xai/outlet_reasoning.py
+Purpose: Rule-based explanation engine that generates business-friendly explanations without depending on remote APIs.
 
-Purpose:
-Create rule-based business explanations without depending fully on API calls.
+Inputs:
 
-Input files:
-
-data/gold/model_driver_table.csv
-data/gold/outlet_segments.csv
-outputs/predictions/quadnova_budget_allocations.csv
-
-Output file:
-
-outputs/predictions/outlet_explanations.csv
-
-Columns:
-
-Outlet_ID
-Predicted_Potential
-Segment
-Confidence_Level
-Top_Positive_Drivers
-Top_Negative_Drivers
-Recommended_Action
-Business_Explanation
-
-What it does:
-
-1. Reads prediction and driver data.
-2. Identifies top positive and negative drivers.
-3. Assigns recommended business action.
-4. Generates simple explanation text.
-
-How to run:
-
-python src/xai/outlet_reasoning.py
-3. src/xai/genai_explainer.py
-
-Purpose:
-Optional GenAI-enhanced explanation layer.
-
-The problem statement requires GenAI/XAI to be user-facing and explain model decisions in simple business language.
-
-Input:
-
-outputs/predictions/outlet_explanations.csv
+- `data/gold/model_driver_table.csv`
+- `data/gold/outlet_segments.csv`
+- `outputs/predictions/quadnova_predictions.csv`
 
 Output:
 
-outputs/predictions/outlet_explanations_genai.csv
-reports/genai_log.md
+- `outputs/predictions/outlet_explanations.csv`
 
-What it does:
+Behavior:
 
-1. Sends structured outlet facts to an LLM.
-2. Generates business explanation.
-3. Stores prompts and responses.
-4. Logs how GenAI was used.
+- Identifies top positive/negative drivers, computes recommended actions and writes a compact `Business_Explanation` text per outlet. This is the guaranteed, offline explanation layer.
 
-Important:
-Keep rule-based explanation as backup. If API fails, the app still works.
+Run (recommended):
 
-How to run:
+```bash
+py -m src.xai.outlet_reasoning
+```
 
-python src/xai/genai_explainer.py
-4. app/streamlit_app.py
+3. `src/xai/genai_explainer.py`
 
-Purpose:
-Main Outlet Intelligence Web App.
+Purpose: Optional GenAI enhancement that attempts to polish rule-based explanations using Google Gemini and writes an audit log.
 
-The final round requires a functional app where business users can browse predictions, filter by province/distributor, and drill into outlet-level reasoning.
+Inputs:
 
-Input files:
+- `outputs/predictions/outlet_explanations.csv`
 
-outputs/predictions/quadnova_predictions.csv
-outputs/predictions/quadnova_budget_allocations.csv
-outputs/predictions/outlet_explanations.csv
-data/gold/model_features.csv
-data/gold/outlet_segments.csv
+Outputs:
 
-App pages / sections:
+- `outputs/predictions/outlet_explanations_gemini.csv` (Gemini-polished; otherwise fallback to base explanation)
+- `outputs/predictions/.gemini_cache.json` (optional cache)
+- `reports/genai_log.md` (transparency / audit log)
 
-1. Executive Overview
-2. Outlet Explorer
-3. Budget Allocation
-4. XAI Explanation
-5. Data Quality Evidence
+Behavior & Notes:
 
-Features:
+- The pipeline reads API configuration from `.env` (`GEMINI_API_KEY`, `GEMINI_MODEL`). If the key or model is invalid, or the API call fails, the job logs the error and preserves the rule-based `Business_Explanation` so downstream consumers remain functional.
+- The project currently uses `google-generativeai` (installed from `requirements.txt`) but that client is flagged as deprecated in upstream docs — plan to migrate to `google.genai` when you have a valid API key and can test model compatibility.
 
-filter by province
-filter by distributor
-search by Outlet_ID
-view predicted potential
-view current average sales
-view potential gap
-view recommended budget allocation
-view outlet segment
-view confidence score
-view business explanation
+Run (example):
 
-How to run:
+```bash
+# ensure .env contains GEMINI_API_KEY and GEMINI_MODEL (optional)
+py -m src.xai.genai_explainer
+```
 
-streamlit run app/streamlit_app.py
-5. app/pages/1_Outlet_Explorer.py
+Tip: for local testing without an API key, run `create_small_sample.py` to generate test datasets; the GenAI step will gracefully skip/enhance depending on connectivity.
 
-Purpose:
-Outlet-level browsing page.
+4. `app/streamlit_app.py`
 
-What it shows:
+Purpose: Main Outlet Intelligence Web App (browse predictions, filter, drill into XAI results, and view budget allocation).
 
-Outlet_ID
-Province
-Distributor_ID
-Maximum_Monthly_Liters
-Segment
-Confidence Score
-Competition Level
+Inputs:
 
-Filters:
+- `outputs/predictions/quadnova_predictions.csv`
+- `outputs/predictions/quadnova_budget_allocations.csv` (optional)
+- `outputs/predictions/outlet_explanations.csv` or `outputs/predictions/outlet_explanations_gemini.csv`
+- `data/gold/model_features.csv` (optional)
+- `data/gold/outlet_segments.csv`
 
-Province
-Distributor
-Segment
-Confidence Level
-6. app/pages/2_Budget_Allocation.py
+Pages / Sections:
 
-Purpose:
-Show Western Province LKR 5M budget allocation.
+1. Executive Overview — KPI cards and segment charts
+2. Outlet Explorer — filter, map view and outlet table
+3. Budget Allocation — allocation charts and simulator
+4. XAI Explanation — outlet drill-down (explanations + drivers)
+5. Data Quality Evidence — rejects, missing values and coordinate checks
 
-What it shows:
+UI / Styling Notes:
 
-Total budget used
-Budget by distributor
-Top funded outlets
-Expected incremental liters
-Risk-adjusted ROI
+- The app uses `app/styles.py` for a modern theme. Key helpers exposed:
+	- `create_section_header(title, subtitle)` — gradient section headers
+	- `create_card(title, value, subtitle, icon)` — glassmorphism KPI cards
+	- `create_badge(text, kind)` — colored badges (primary/success/warning)
+	- `inject_fab(label, link)` — floating feedback button
+- The Executive Overview now renders KPI cards instead of raw `st.metric` components for better visual hierarchy.
 
-Charts:
+Run (Windows recommended):
 
-Distributor allocation bar chart
-Top 20 outlet allocation chart
-ROI vs allocation scatter plot
-7. app/pages/3_XAI_Explanation.py
+```powershell
+py -m pip install -r requirements.txt
+py -m streamlit run app/streamlit_app.py
+```
 
-Purpose:
-Outlet drill-down explanation page.
+Notes on `requirements.txt`:
 
-What it shows:
+- The file installs core data science, visualization and web packages (pandas, numpy, scikit-learn, plotly, streamlit, etc.) and `google-generativeai` for GenAI. Some packages are large (`pyspark`, `dbt-core`, `google-generativeai`) and may require extra time or system dependencies—use a virtual environment.
 
-Selected Outlet_ID
-Prediction
-Potential gap
-Top positive drivers
-Top negative drivers
-Business explanation
-Recommended action
-Confidence level
-8. app/pages/4_Data_Quality.py
+5. `app/pages/1_Outlet_Explorer.py`
 
-Purpose:
-Show data quality and rejected records evidence.
+Purpose: Outlet-level browsing page with filters.
 
-What it shows:
+Shown fields & filters:
 
-Total raw records
-Clean records
-Rejected records
-Rejection reasons
-Coordinate quality summary
-Missing value summary
-9. reports/final_methodology_paper.md
+- `Outlet_ID`, `Province`, `Distributor_ID`, `Maximum_Monthly_Liters`, `Segment`, `Confidence Score`, `Competition Level`
+- Filters: Province, Distributor, Segment, Confidence
 
-Purpose:
-Draft the 10-page technical paper.
+6. `app/pages/2_Budget_Allocation.py`
 
-The paper must explain data engineering, scraping pipeline, data cleaning, mathematical framework, spend optimization, and GenAI transparency log.
+Purpose: Visualize budget allocation scenarios (Western Province sample included). Key charts: distributor allocations, top outlets, ROI vs allocation.
 
-Structure:
+7. `app/pages/3_XAI_Explanation.py`
 
-1. Cover Page
-2. Executive Summary
-3. Data Engineering and Lakehouse Pipeline
-4. External POI and Spatial Feature Engineering
-5. Data Cleaning and Rejected Records
-6. Mathematical Framework for Latent Potential
-7. Marketing Spend Optimization Logic
-8. XAI and GenAI Explanation Layer
-9. Business Impact and Deployment
-10. GenAI Transparency Log
-10. reports/executive_pitch_script.md
+Purpose: Drill-down page for outlet explanations; prefers `outlet_explanations_gemini.csv` when present, else falls back to `outlet_explanations.csv`.
 
-Purpose:
-10-minute pitch script.
+Displayed:
 
-Structure:
+- `Outlet_ID`, `Predicted_Potential`, `Potential gap`, top positive/negative drivers, `Business_Explanation`, recommended action, and confidence.
 
-Slide 1: Problem and Big Idea
-Slide 2: Why historical sales are misleading
-Slide 3: Our Potential-Based Allocation Engine
-Slide 4: Data Engineering Pipeline
-Slide 5: Spatial Intelligence and Competition
-Slide 6: Latent Potential Model
-Slide 7: LKR 5M Budget Allocation Strategy
-Slide 8: Outlet Intelligence Web App
-Slide 9: Business Impact
-Slide 10: Rollout Plan and Closing
+8. `app/pages/4_Data_Quality.py`
 
-The pitch deck must be capped at 10 slides and explain the framework to non-technical C-suite leaders.
+Purpose: Data quality metrics and rejected records evidence.
 
-11. reports/genai_log.md
+9. `reports/final_methodology_paper.md`
 
-Purpose:
-Document how GenAI was used honestly.
+Purpose: Draft technical paper covering engineering, modeling, optimization and GenAI transparency. Be sure to reference `reports/genai_log.md` and include example human validation checks.
 
-Include:
+10. `reports/executive_pitch_script.md`
 
-Prompt used
-Purpose of prompt
-Output summary
-Human validation step
-What was accepted
-What was rejected
-Final decision
+Purpose: 10-minute pitch script and slide structure for executive audience.
 
-Example entry:
+11. `reports/genai_log.md`
 
-Prompt Purpose:
-Generate business-friendly outlet explanation from structured model drivers.
+Purpose: Honest transparency log describing prompts, usage, human validation and final decisions. Generated by `src/xai/genai_explainer.py`.
 
-Human Validation:
-Checked whether generated explanation matched actual top drivers and did not invent unsupported reasons.
+Include per-run entries:
 
-Accepted:
-Clear explanation structure.
+- Prompt used and purpose
+- Model and parameters
+- Whether the response was used as-is or edited
+- Human validation steps and final acceptance/rejection notes
 
-Rejected:
-Any sentence that claimed causal impact without evidence.
-Member 3 Improvements / Wow Factors
+Developer Recommendations & Next Enhancements
 
-Member 3 should add:
+1. Migrate `src/xai/gemini_client.py` to the newer `google.genai` client when an API key and model names are confirmed.
+2. Add a human-in-the-loop editor in the XAI Explanation page to approve/patch GenAI text (persist edits back into `outputs/predictions/` with a reviewer column).
+3. Add an exportable executive summary (PDF) using the styled cards and selected outlet groups.
+4. Add a small UX for toggling rule-based vs GenAI text (A/B view) for SME review.
 
-1. Dynamic outlet explanation.
-2. Business action recommendation.
-3. Budget scenario simulator.
-4. Executive dashboard.
-5. GenAI transparency log.
+Quick Commands
+
+```powershell
+# Install deps
+py -m pip install -r requirements.txt
+
+# Run rule-based explanations
+py -m src.xai.outlet_reasoning
+
+# Attempt GenAI enhancement (safe fallback)
+py -m src.xai.genai_explainer
+
+# Start the Streamlit app
+py -m streamlit run app/streamlit_app.py
+```
+
+Testing & Small-sample data
+
+- Use `create_small_sample.py` to generate a small test dataset (100 outlets) and base explanations for UI testing.
+
+Transparency & Safety
+
+- The GenAI pipeline always records prompts, model responses and a human validation flag into `reports/genai_log.md`. Keep the log updated and include explicit acceptance criteria for any edited text.
+
+Keep this document current as the UI and XAI pipelines evolve.
