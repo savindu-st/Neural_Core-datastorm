@@ -4,11 +4,11 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Install dependencies
-COPY frontend/package.json frontend/package-lock.json* ./
+COPY webapp/frontend/package.json webapp/frontend/package-lock.json* ./
 RUN npm install
 
 # Copy source code
-COPY frontend/ .
+COPY webapp/frontend/ .
 
 # Build the React app (optional for dev, but good for completeness)
 # RUN npm run build

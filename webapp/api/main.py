@@ -16,7 +16,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 def load_data():
     """Loads and enriches the data, returning a Pandas DataFrame."""

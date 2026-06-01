@@ -43,41 +43,41 @@ QuadNova-datastorm/
 
 ---
 
-# Running the Pipeline End-to-End
+# Execution & Deployment
 
-### 1. Setup Environment
-```bash
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate on Windows
-pip install -r requirements.txt
-```
+You can run the entire system (data pipelines, modeling, and interactive web dashboard) in two different ways:
 
-### 2. Add Raw Data
-Place all provided CSV files in `data/bronze/`.
+### Option A: Local Execution (Recommended)
+This runs the entire end-to-end data engineering pipeline, model training, GenAI explanation generation, and launches the web application dashboard automatically.
 
-### 3. Execute Pipeline
-```bash
-# Data Forensics & Cleaning
-python -m src.data_pipeline.clean
+1. **Setup Environment**:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # or venv\Scripts\activate on Windows
+   pip install -r requirements.txt
+   ```
 
-# External POI Acquisition (BBox + KD-Tree)
-python -m src.scraper.poi_fast_scraper
+2. **Add Raw Data**:
+   Place all raw competition CSV files in `data/bronze/`.
 
-# Gold Layer Transformation
-python -m src.data_pipeline.transform
+3. **Run Pipeline & Web Application**:
+   ```bash
+   python run_pipeline.py
+   ```
+   *This single command runs all pipeline stages sequentially (ingestion, cleaning, POI scraping, feature engineering, Tobit modeling, XAI, and visualization generation) and starts both the FastAPI backend (port `8000`) and the React dashboard (port `3000`).*
 
-# Advanced Feature Engineering
-python -m src.features.build_features
+---
 
-# Model Training & Explainability
-python -m src.models.train_model
+### Option B: Dockerized Web App Execution
+You can build and start the interactive web application dashboard stack using Docker Compose:
 
-# Generate Final Submission & BI Report
-python -m src.models.predict
-
-# Generate Technical Audit Report
-python -m src.data_pipeline.generate_forensics_report
-```
+1. **Start Services**:
+   ```bash
+   docker-compose up --build
+   ```
+   *This command spins up two services:*
+   *   **Backend**: FastAPI service running on `http://localhost:8000`
+   *   **Frontend**: React / Vite dashboard running on `http://localhost:3000`
 
 ---
 

@@ -22,7 +22,7 @@ services:
     ports:
       - "3000:3000"
     volumes:
-      - ./frontend:/app  # Allows live-reloading for UI edits
+      - ./webapp/frontend:/app  # Allows live-reloading for UI edits
       - /app/node_modules # Prevent host node_modules from overriding container's
     depends_on:
       - backend

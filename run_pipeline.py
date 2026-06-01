@@ -111,7 +111,7 @@ def main():
         os.environ["VITE_PORT"] = str(frontend_port)
 
     backend = subprocess.Popen(
-        [sys.executable, "api/main.py"],
+        [sys.executable, "webapp/api/main.py"],
         env=env,
         cwd=os.getcwd()
     )
@@ -119,7 +119,7 @@ def main():
     logger.info(f"🚀 Starting Frontend App (http://localhost:{frontend_port})...")
     frontend = subprocess.Popen(
         ["npm", "run", "dev", "--", "--port", str(frontend_port)],
-        cwd=os.path.join(os.getcwd(), "frontend"),
+        cwd=os.path.join(os.getcwd(), "webapp", "frontend"),
         env=os.environ.copy(),
         shell=True
     )
