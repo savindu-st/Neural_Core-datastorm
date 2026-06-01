@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app  # Allows live-reloading for models/data
+    environment:
+      - GEMINI_MODEL=gemini-pro
+    # Uncomment the following to pass your API key if needed
+    # env_file:
+    #   - .env
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app  # Allows live-reloading for UI edits
+      - /app/node_modules # Prevent host node_modules from overriding container's
+    depends_on:
+      - backend
