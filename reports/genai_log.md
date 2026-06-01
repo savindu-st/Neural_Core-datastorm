@@ -1,11 +1,11 @@
 # Gemini AI XAI - Usage Log & Statistics
-Generated: 2026-05-31T13:38:44.485026
+Generated: 2026-06-01T15:55:56.052332
 
 ## Processing Summary
-- **Total Outlets Processed:** 100
+- **Total Outlets Processed:** 20000
 - **Gemini API Calls:** 0
 - **Cache Hits:** 0
-- **Rule-Based Fallback:** 100
+- **Rule-Based Fallback:** 20000
 - **Success Rate:** 0.0%
 
 ## API Configuration
@@ -74,7 +74,7 @@ Before deploying Gemini explanations:
 
 ## Cache Management
 - Cache Location: `outputs/predictions/.gemini_cache.json`
-- Cache Size: 100 entries
+- Cache Size: 20000 entries
 - Cache Hits: 0
 - **Cache Effectiveness: 0.0%**
 

@@ -1,9 +1,8 @@
-# Data Processing & Lakehouse
+# Lightweight Docker requirements (only packages actually used at runtime)
+
+# Data Processing
 pandas
 numpy
-pyarrow
-pyspark
-dbt-core
 
 # Machine Learning & Modeling
 scikit-learn
@@ -12,12 +11,10 @@ lightgbm
 statsmodels
 scipy
 joblib
-lifelines # Useful for censored regression
 
 # Web Scraping & APIs
 requests
 beautifulsoup4
-scrapy
 
 # Generative AI - Gemini
 google-genai
@@ -27,14 +24,10 @@ matplotlib
 seaborn
 plotly
 
-# Web App & UI
+# Web App & API
 fastapi
 uvicorn
-streamlit
-streamlit-option-menu
 
 # Utilities
 pyyaml
-jupyter
-pytest
 python-dotenv

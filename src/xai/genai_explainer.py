@@ -12,7 +12,7 @@ from datetime import datetime
 import os
 import json
 from dotenv import load_dotenv
-from .gemini_client import GeminiClient
+from src.xai.gemini_client import GeminiClient
 
 # Load environment variables from .env
 load_dotenv()
