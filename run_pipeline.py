@@ -77,15 +77,11 @@ def main():
     logger.info("Predictions available at: outputs/predictions/quadnova_predictions.csv")
     logger.info("Allocations available at: outputs/predictions/quadnova_budget_allocations.csv")
     
-    # ── Launch Web App ──────────────────────────────────────
-    import os
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.getcwd()
-    
     logger.info("")
     logger.info("========================================")
     logger.info("🌐 Starting QuadNova Web Application...")
     logger.info("========================================")
+
     
     # Determine free ports for backend and frontend
     bp_str = os.getenv("QUADNOVA_PORT", "")

@@ -113,98 +113,76 @@ def run_budget_optimizer():
     # Sort descending by allocation score
     df_eligible = df_eligible.sort_values("allocation_score", ascending=False).reset_index(drop=True)
 
-    # ── 5. Distributor fairness floors ───────────────────────────
-    # Reserve floor budgets for each WP distributor, then distribute the remainder
-    logger.info("Reserving distributor fairness floor allocations...")
-    dist_floor_total = 0.0
-    dist_floor_map   = {}  # distributor -> guaranteed floor spend
+    # ── 5. Continuous Proportional Allocation with Bounded Constraints ──
+    logger.info("Executing continuous proportional budget allocation using iterative water-filling...")
 
-    for dist in WP_DISTRIBUTORS:
-        dist_outlets = df_eligible[df_eligible["Distributor_ID"] == dist]
-        if len(dist_outlets) > 0:
-            dist_floor_map[dist]  = DISTRIBUTOR_MIN_ALLOCATION_LKR
-            dist_floor_total     += DISTRIBUTOR_MIN_ALLOCATION_LKR
+    # Pre-extract arrays for vectorized operations
+    scores = df_eligible["allocation_score"].values
+    dist_ids = df_eligible["Distributor_ID"].values
 
-    remaining_budget = TOTAL_WP_BUDGET_LKR - dist_floor_total
-    logger.info(f"Total floor reserved: LKR {dist_floor_total:,.0f} | Remaining pool: LKR {remaining_budget:,.0f}")
+    # Distributor multipliers for floor satisfaction
+    dist_multipliers = {d: 1.0 for d in WP_DISTRIBUTORS}
 
-    # ── 6. Greedy proportional allocation ────────────────────────
-    logger.info("Running greedy proportional allocation...")
+    for iteration in range(25):
+        # Pre-compute per-outlet multiplier array
+        mults = np.array([dist_multipliers.get(d, 1.0) for d in dist_ids])
 
-    allocations    = {}  # Outlet_ID -> LKR spend
-    dist_spent     = {d: 0.0 for d in WP_DISTRIBUTORS}
-    budget_used    = 0.0
+        # Global scaling factor search via binary search
+        low, high, best_alpha = 0.0, 1e9, 0.0
 
-    # Phase A: Guarantee distributor floors by allocating to their top-scored outlets
-    for dist in WP_DISTRIBUTORS:
-        if dist not in dist_floor_map:
-            continue
-        floor     = dist_floor_map[dist]
-        dist_outs = df_eligible[df_eligible["Distributor_ID"] == dist].copy()
-        dist_outs = dist_outs.sort_values("allocation_score", ascending=False)
-        floor_left = floor
+        for _ in range(100):
+            mid = (low + high) / 2.0
+            # Vectorized tentative allocations
+            vals = mid * mults * scores
+            allocs = np.where(
+                vals >= MIN_SPEND_PER_OUTLET_LKR,
+                np.clip(vals, MIN_SPEND_PER_OUTLET_LKR, MAX_SPEND_PER_OUTLET_LKR),
+                0.0,
+            )
+            if allocs.sum() > TOTAL_WP_BUDGET_LKR:
+                high = mid
+            else:
+                low = mid
+                best_alpha = mid
 
-        for _, row in dist_outs.iterrows():
-            if floor_left <= 0:
-                break
-            oid  = row["Outlet_ID"]
-            alloc = min(MAX_SPEND_PER_OUTLET_LKR, floor_left, MIN_SPEND_PER_OUTLET_LKR * 4)
-            alloc = max(alloc, MIN_SPEND_PER_OUTLET_LKR)
-            if oid not in allocations:
-                allocations[oid]     = alloc
-                dist_spent[dist]    += alloc
-                budget_used         += alloc
-                floor_left          -= alloc
+        # Final allocations for this iteration (vectorized)
+        vals = best_alpha * mults * scores
+        allocs = np.where(
+            vals >= MIN_SPEND_PER_OUTLET_LKR,
+            np.clip(vals, MIN_SPEND_PER_OUTLET_LKR, MAX_SPEND_PER_OUTLET_LKR),
+            0.0,
+        )
+        df_eligible["temp_alloc"] = allocs
 
-    # Phase B: Distribute remaining budget to all eligible outlets proportionally
-    remaining_budget = TOTAL_WP_BUDGET_LKR - budget_used
-    total_score      = df_eligible["allocation_score"].sum()
+        # Check distributor floor limits
+        all_satisfied = True
+        for dist in WP_DISTRIBUTORS:
+            dist_mask = dist_ids == dist
+            dist_sum = allocs[dist_mask].sum()
+            if dist_sum < DISTRIBUTOR_MIN_ALLOCATION_LKR:
+                all_satisfied = False
+                deficit_ratio = DISTRIBUTOR_MIN_ALLOCATION_LKR / (dist_sum + 1e-9)
+                dist_multipliers[dist] *= min(1.5, max(1.05, deficit_ratio))
 
-    for _, row in df_eligible.iterrows():
-        oid = row["Outlet_ID"]
-        if remaining_budget <= MIN_SPEND_PER_OUTLET_LKR:
+        if all_satisfied:
+            logger.info(f"Water-filling allocation converged successfully in {iteration+1} iterations.")
             break
-
-        # Proportional allocation from remaining pool
-        prop_alloc = (row["allocation_score"] / (total_score + 1e-9)) * remaining_budget
-
-        # Apply business limits
-        alloc = np.clip(prop_alloc, MIN_SPEND_PER_OUTLET_LKR, MAX_SPEND_PER_OUTLET_LKR)
-        alloc = min(alloc, remaining_budget)
-
-        if oid not in allocations:
-            allocations[oid]  = alloc
-            budget_used      += alloc
-            remaining_budget -= alloc
-        else:
-            # Top-up existing floor-allocated outlets proportionally
-            headroom = MAX_SPEND_PER_OUTLET_LKR - allocations[oid]
-            if headroom > 0:
-                topup = min(alloc * 0.5, headroom, remaining_budget)
-                allocations[oid]  += topup
-                budget_used       += topup
-                remaining_budget  -= topup
-
-    # ── 7. Final rounding and budget guard ───────────────────────
-    logger.info("Finalising allocations and enforcing total budget cap...")
-    alloc_df = pd.DataFrame([
-        {"Outlet_ID": oid, "Trade_Spend_Allocation_LKR": round(spend, 2)}
-        for oid, spend in allocations.items()
-    ])
-
-    # Safety: scale down proportionally if budget exceeded
+    df_eligible["Trade_Spend_Allocation_LKR"] = df_eligible["temp_alloc"].round(2)
+    df_eligible.drop(columns=["temp_alloc"], inplace=True)
+    
+    # ── 6. Filter Active Outlets and Save Output ───────────────────
+    alloc_df = df_eligible[df_eligible["Trade_Spend_Allocation_LKR"] > 0][["Outlet_ID", "Trade_Spend_Allocation_LKR"]].copy()
+    
+    # Enforce total budget cap strictly down to the cent via scale rounding if necessary
     actual_total = alloc_df["Trade_Spend_Allocation_LKR"].sum()
     if actual_total > TOTAL_WP_BUDGET_LKR:
         scale = TOTAL_WP_BUDGET_LKR / actual_total
-        alloc_df["Trade_Spend_Allocation_LKR"] = (
-            alloc_df["Trade_Spend_Allocation_LKR"] * scale
-        ).round(2)
+        alloc_df["Trade_Spend_Allocation_LKR"] = (alloc_df["Trade_Spend_Allocation_LKR"] * scale).round(2)
         actual_total = alloc_df["Trade_Spend_Allocation_LKR"].sum()
-
-    # ── 8. Save output CSV ────────────────────────────────────────
+        
     alloc_df.to_csv(output_file, index=False)
 
-    # ── 9. Summary Report ─────────────────────────────────────────
+    # ── 6. Summary Report ─────────────────────────────────────────
     logger.info("=" * 60)
     logger.info(f"  Outlets Allocated  : {len(alloc_df)}")
     logger.info(f"  Total Budget Used  : LKR {actual_total:>12,.2f}")

@@ -14,7 +14,21 @@ data:
 model:
   target: "volume_potential"
   censoring_indicator: "is_stockout"
+  prediction_quantile: 0.90  # Tobit quantile level for latent demand estimate
   params:
     max_depth: 6
     learning_rate: 0.1
     n_estimators: 100
+
+# Province mapping: distributor ID token -> province name
+# Used by build_features.py to avoid fragile string-matching logic
+province_mapping:
+  _W_: "Western"
+  _C_: "Central"
+  _NW_: "North-Western"
+  _S_: "Southern"
+  _N_: "Northern"
+  _E_: "Eastern"
+  _NC_: "North-Central"
+  _Sab_: "Sabaragamuwa"
+  _U_: "Uva"

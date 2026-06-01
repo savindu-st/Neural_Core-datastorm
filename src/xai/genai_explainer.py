@@ -294,12 +294,12 @@ Generated: {datetime.now().isoformat()}
 ### Setup
 Set your Gemini API key in environment:
 ```bash
-export GEMINI_API_KEY="AQ.Ab8RN6Jil2B5JSVDTRb2OLk0Bc1yWLqUSHRFNJ9_Ugsdt6X7Cg"
+export GEMINI_API_KEY="<your-gemini-api-key>"
 ```
 
 Or in .env file:
 ```
-GEMINI_API_KEY=AQ.Ab8RN6Jil2B5JSVDTRb2OLk0Bc1yWLqUSHRFNJ9_Ugsdt6X7Cg
+GEMINI_API_KEY=<your-gemini-api-key>
 ```
 
 ### Cost Analysis

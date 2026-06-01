@@ -119,15 +119,21 @@ def build_features():
         
     df_master["Distributor_ID"] = df_master["Distributor_ID"].fillna("Unknown")
     
-    # Map Province from Distributor_ID
-    def get_province(dist_id):
-        dist_str = str(dist_id)
-        if '_W_' in dist_str: return 'Western'
-        if '_C_' in dist_str: return 'Central'
-        if '_NW_' in dist_str: return 'North-Western'
-        if '_S_' in dist_str: return 'Southern'
-        return 'Other'
-        
+    # Map Province from Distributor_ID using config-driven mapping
+    _config = load_config()
+    _province_map = _config.get("province_mapping", {
+        "_W_": "Western", "_C_": "Central", "_NW_": "North-Western",
+        "_S_": "Southern", "_N_": "Northern", "_E_": "Eastern",
+        "_NC_": "North-Central", "_Sab_": "Sabaragamuwa", "_U_": "Uva",
+    })
+
+    def get_province(dist_id: str) -> str:
+        """Map a Distributor_ID to a province using config-defined token prefixes."""
+        for token, province in _province_map.items():
+            if token in str(dist_id):
+                return province
+        return "Other"
+
     df_master['Province'] = df_master['Distributor_ID'].apply(get_province)
     
     # B. Sales Features

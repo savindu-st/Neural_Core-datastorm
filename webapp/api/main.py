@@ -1,4 +1,5 @@
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -6,39 +7,41 @@ import numpy as np
 import os
 from pathlib import Path
 
-app = FastAPI(title="QuadNova API")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-def load_data():
-    """Loads and enriches the data, returning a Pandas DataFrame."""
+# ── Module-level data cache (loaded once at startup) ──────────────────────
+_cache: dict = {}
+
+
+def _load_data_from_disk():
+    """Loads and enriches the data from disk. Called once at startup."""
     try:
         predictions = pd.read_csv(PROJECT_ROOT / 'outputs/predictions/quadnova_predictions.csv')
-    except Exception as e:
-        return None, f"Failed to load predictions: {e}"
+    except FileNotFoundError as e:
+        return None, None, f"Failed to load predictions: {e}"
 
-    # Load optional files
+    # Load optional files — only catch FileNotFoundError, not all exceptions
     allocations, explanations, segments, features = None, None, None, None
-    try: allocations = pd.read_csv(PROJECT_ROOT / 'outputs/predictions/quadnova_budget_allocations.csv')
-    except: pass
-    try: explanations = pd.read_csv(PROJECT_ROOT / 'outputs/predictions/outlet_explanations.csv')
-    except: pass
-    try: segments = pd.read_csv(PROJECT_ROOT / 'data/gold/outlet_segments.csv')
-    except: pass
-    try: features = pd.read_csv(PROJECT_ROOT / 'data/gold/model_features.csv')
-    except: pass
+    try:
+        allocations = pd.read_csv(PROJECT_ROOT / 'outputs/predictions/quadnova_budget_allocations.csv')
+    except FileNotFoundError:
+        pass
+    try:
+        explanations = pd.read_csv(PROJECT_ROOT / 'outputs/predictions/outlet_explanations.csv')
+    except FileNotFoundError:
+        pass
+    try:
+        segments = pd.read_csv(PROJECT_ROOT / 'data/gold/outlet_segments.csv')
+    except FileNotFoundError:
+        pass
+    try:
+        features = pd.read_csv(PROJECT_ROOT / 'data/gold/model_features.csv')
+    except FileNotFoundError:
+        pass
 
     # Enrich
     enriched = predictions.copy()
-    
+
     if features is not None:
         feat_cols = [c for c in ['Outlet_ID', 'Province', 'Distributor_ID', 'avg_monthly_liters', 'Latitude', 'Longitude', 'Outlet_Type', 'Outlet_Size'] if c in features.columns]
         enriched = enriched.merge(features[feat_cols], on='Outlet_ID', how='left')
@@ -54,18 +57,57 @@ def load_data():
     enriched = enriched.replace({np.nan: None})
     if explanations is not None:
         explanations = explanations.replace({np.nan: None})
-        
+
     return enriched, explanations, None
+
+
+def _get_df():
+    """Returns the cached main dataframe, raising 503 if not loaded."""
+    df = _cache.get("df")
+    if df is None:
+        err = _cache.get("error", "Data not yet loaded")
+        raise HTTPException(status_code=503, detail=err)
+    return df
+
+
+def _get_explanations():
+    """Returns the cached explanations dataframe (may be None)."""
+    return _cache.get("explanations")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load all dataframes once at startup; store in module-level cache."""
+    df, explanations, err = _load_data_from_disk()
+    if err:
+        _cache["df"] = None
+        _cache["error"] = err
+    else:
+        _cache["df"] = df
+        _cache["explanations"] = explanations
+    yield
+    _cache.clear()
+
+
+app = FastAPI(title="QuadNova API", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "QuadNova API is running"}
 
+
 @app.get("/api/overview")
 def get_overview():
-    df, _, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
+    df = _get_df()
 
     total_outlets = len(df)
     avg_potential = df['Maximum_Monthly_Liters'].mean()
@@ -102,9 +144,7 @@ def get_overview():
 
 @app.get("/api/outlets")
 def get_outlets(limit: int = 500, offset: int = 0, province: str = None, distributor: str = None, search: str = None):
-    df, _, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
+    df = _get_df().copy()
 
     if province and province != "All":
         df = df[df['Province'] == province]
@@ -122,9 +162,7 @@ def get_outlets(limit: int = 500, offset: int = 0, province: str = None, distrib
 
 @app.get("/api/outlets/filters")
 def get_filters():
-    df, _, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
+    df = _get_df()
 
     provinces = ["All"]
     if 'Province' in df.columns:
@@ -141,19 +179,14 @@ def get_filters():
 
 @app.get("/api/xai/list")
 def get_xai_list():
-    _, explanations, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
+    explanations = _get_explanations()
     if explanations is None:
         return []
     return explanations['Outlet_ID'].astype(str).tolist()
 
 @app.get("/api/xai/{outlet_id}")
 def get_xai_explanation(outlet_id: str):
-    df, explanations, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
-        
+    explanations = _get_explanations()
     if explanations is None:
         raise HTTPException(status_code=404, detail="Explanations not generated yet")
 
@@ -165,9 +198,7 @@ def get_xai_explanation(outlet_id: str):
 
 @app.get("/api/budget")
 def get_budget():
-    df, _, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
+    df = _get_df().copy()
 
     # Convert all numeric columns up-front to avoid dtype object errors
     for col in ['Trade_Spend_Allocation_LKR', 'Expected_Incremental_Liters', 'Risk_Adjusted_ROI']:
@@ -210,21 +241,19 @@ def get_quality():
             "rows_flagged": int(dq['rows_flagged'].sum()),
             "rows_dropped": int(dq['rows_dropped'].sum()),
         }
-    except Exception:
+    except FileNotFoundError:
         pass
     try:
         rej = pd.read_csv(PROJECT_ROOT / 'outputs/evidence/rejected_reason_counts.csv')
         result["rejections"] = rej.to_dict('records')
-    except Exception:
+    except FileNotFoundError:
         pass
     return result
 
 @app.get("/api/budget/simulate")
 def simulate_budget(total_budget: float = 5000000):
     """Re-allocate budget proportionally given a new total."""
-    df, _, err = load_data()
-    if err:
-        raise HTTPException(status_code=500, detail=err)
+    df = _get_df().copy()
 
     for col in ['Trade_Spend_Allocation_LKR', 'Expected_Incremental_Liters', 'Risk_Adjusted_ROI']:
         if col in df.columns:

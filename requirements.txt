@@ -2,22 +2,17 @@
 pandas
 numpy
 pyarrow
-pyspark
-dbt-core
 
 # Machine Learning & Modeling
 scikit-learn
-xgboost
-lightgbm
 statsmodels
 scipy
 joblib
-lifelines # Useful for censored regression
+lifelines  # Censored regression support
 
 # Web Scraping & APIs
 requests
 beautifulsoup4
-scrapy
 
 # Generative AI - Gemini
 google-genai
@@ -27,11 +22,9 @@ matplotlib
 seaborn
 plotly
 
-# Web App & UI
+# Web App & API
 fastapi
 uvicorn
-streamlit
-streamlit-option-menu
 
 # Utilities
 pyyaml

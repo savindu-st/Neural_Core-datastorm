@@ -93,22 +93,25 @@ class TobitModel:
             
         return self
 
-    def predict(self, X, method='mean'):
+    def predict(self, X, method='mean', quantile=0.90):
         """
         Predicts the latent potential (uncensored value).
-        
+
         Args:
             X: Feature matrix.
             method: 'mean' for the expected value of the latent distribution (Xb),
-                    'quantile' for a high-potential estimate (e.g., 90th percentile).
+                    'quantile' for a high-potential estimate at the given quantile level.
+            quantile: Quantile level to use when method='quantile' (default 0.90).
+                      Configurable via config/params.yaml -> model.prediction_quantile.
         """
         X_const = np.column_stack([np.ones(X.shape[0]), X])
         latent_mean = np.dot(X_const, self.beta)
-        
+
         if method == 'mean':
             return latent_mean
         elif method == 'quantile':
-            # Potential as the 90th percentile of the demand distribution
-            return latent_mean + norm.ppf(0.90) * self.sigma
+            # Potential as the Nth percentile of the demand distribution
+            return latent_mean + norm.ppf(quantile) * self.sigma
         else:
             return latent_mean
+

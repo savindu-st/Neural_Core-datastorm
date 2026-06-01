@@ -33,39 +33,39 @@ def calculate_confidence_score(df: pd.DataFrame) -> pd.Series:
     total_score = recency_score + stability_score + poi_signal
     return np.round(total_score, 2)
 
-def segment_outlets(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
-    """Segments outlets into business categories and provides recommendations."""
-    segments = []
-    recommendations = []
-    risk_flags = []
-    
-    for _, row in df.iterrows():
-        # Logic for segments
-        if row['poi_score'] > 10 and row['growth_rate'] > 0.1:
-            segment = "High Potential Growth"
-            action = "Aggressive Expansion & Cooler Deployment"
-            risk = "Low"
-        elif row['market_saturation_index'] < 2 and row['poi_score'] > 5:
-            segment = "Underserved Gem"
-            action = "Introduce New SKUs & Trade Marketing"
-            risk = "Medium (Competitive Entry)"
-        elif row['monthly_avg_sales'] > df['monthly_avg_sales'].median() and row['growth_rate'] < 0:
-            segment = "Saturated Mature"
-            action = "Retention focus & Loyalty discounts"
-            risk = "Medium (Churn Risk)"
-        elif row['inactive_days'] > 60:
-            segment = "At-Risk / Dormant"
-            action = "Re-engagement Visit & Credit Review"
-            risk = "High"
-        else:
-            segment = "Stable Core Retailer"
-            action = "Standard Service Level"
-            risk = "Low"
-            
-        segments.append(segment)
-        recommendations.append(action)
-        risk_flags.append(risk)
-        
+def segment_outlets(df: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Segments outlets into business categories using vectorized np.select().
+    Returns (segments, recommendations, risk_flags) Series.
+    """
+    median_sales = df['monthly_avg_sales'].median()
+
+    conditions = [
+        (df['poi_score'] > 10) & (df['growth_rate'] > 0.1),
+        (df['market_saturation_index'] < 2) & (df['poi_score'] > 5),
+        (df['monthly_avg_sales'] > median_sales) & (df['growth_rate'] < 0),
+        df['inactive_days'] > 60,
+    ]
+    segments = np.select(
+        conditions,
+        ["High Potential Growth", "Underserved Gem", "Saturated Mature", "At-Risk / Dormant"],
+        default="Stable Core Retailer",
+    )
+    recommendations = np.select(
+        conditions,
+        [
+            "Aggressive Expansion & Cooler Deployment",
+            "Introduce New SKUs & Trade Marketing",
+            "Retention focus & Loyalty discounts",
+            "Re-engagement Visit & Credit Review",
+        ],
+        default="Standard Service Level",
+    )
+    risk_flags = np.select(
+        conditions,
+        ["Low", "Medium (Competitive Entry)", "Medium (Churn Risk)", "High"],
+        default="Low",
+    )
     return pd.Series(segments), pd.Series(recommendations), pd.Series(risk_flags)
 
 def generate_predictions():
@@ -93,7 +93,10 @@ def generate_predictions():
     # 3. Generate Uncapped Predictions
     logger.info("Generating uncapped demand potential...")
     X = df[feature_cols].values
-    predictions = model.predict(X, method='quantile')
+    config = load_config()
+    prediction_quantile = config.get("model", {}).get("prediction_quantile", 0.90)
+    predictions = model.predict(X, method='quantile', quantile=prediction_quantile)
+
     
     # 3b. Apply Dynamic Potential Ceiling (Advanced Methodology)
     # The 'ceiling' isn't fixed; it expands for outlets with high POI and growth

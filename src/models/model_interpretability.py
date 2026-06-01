@@ -11,6 +11,7 @@ import joblib
 import logging
 from pathlib import Path
 import matplotlib.pyplot as plt
+from src.utils.config import load_config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -122,14 +123,6 @@ def generate_interpretability_report():
     else:
         logger.error("Tobit Model coefficients (beta) not found in the serialized model object.")
 
-def load_config(config_path="config/params.yaml"):
-    """Local config helper since model_interpretability is run as main."""
-    import yaml
-    project_root = Path(__file__).resolve().parents[2]
-    path = project_root / config_path
-    with open(path, "r") as f:
-        config = yaml.safe_load(f)
-    return config
-
 if __name__ == "__main__":
     generate_interpretability_report()
+
